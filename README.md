@@ -5,6 +5,29 @@ and more stable way for all users to experience the web.
 
 The project's web site is https://www.chromium.org.
 
+## Local development CLI
+
+The repository includes a small `mach`-style command for common development
+tasks. Run `mach --help` or `mach.bat --help` on Windows to see every command.
+
+```text
+mach doctor
+mach bootstrap
+mach bootstrap --check
+mach config --out out/Default --args="is_debug=true"
+mach build --out out/Default chrome
+mach test --out out/Default --target unit_tests
+mach test --auto --out out/Default -- --run-changed
+mach run --out out/Default -- --user-data-dir=out/Default/user-data
+mach doc --no-serve --no-open
+mach python --virtualenv tools -- -c "print('ready')"
+mach format --check
+```
+
+The CLI delegates dependency synchronization, GN generation, builds, tests,
+and formatting to the repository's standard tools. It does not choose or
+rename the browser product.
+
 To check out the source code locally, don't use `git clone`! Instead,
 follow [the instructions on how to get the code](docs/get_the_code.md).
 
