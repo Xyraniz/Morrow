@@ -1,0 +1,94 @@
+include_rules = [
+  # ChromeOS should not depend on //chrome. See //docs/chromeos/code.md for
+  # details.
+  "-chrome",
+
+  # Existing dependencies within //chrome. There is an active effort to
+  # refactor //chrome/browser/ash to break these dependencies; see b/332804822.
+  # Whenever possible, avoid adding new //chrome dependencies to this list.
+  #
+  # Files residing in certain directories (e.g., //chrome/browser) are listed
+  # individually. Other dependencies within //chrome are listed on a per-
+  # directory basis. See //tools/chromeos/gen_deps.sh for details.
+  "+chrome/browser/apps/app_discovery_service",
+  "+chrome/browser/apps/app_service",
+  "+chrome/browser/ash/app_list",
+  "+chrome/browser/ash/arc",
+  "+chrome/browser/ash/crostini",
+  "+chrome/browser/ash/drive",
+  "+chrome/browser/ash/extensions",
+  "+chrome/browser/ash/file_manager",
+  "+chrome/browser/ash/file_suggest",
+  "+chrome/browser/ash/profiles",
+  "+chrome/browser/ash/release_notes",
+  "+chrome/browser/ash/system_web_apps",
+  "+chrome/browser/autocomplete",
+  "+chrome/browser/bitmap_fetcher",
+  "+chrome/browser/bookmarks",
+  "+chrome/browser/extensions/extension_service.h",
+  "+chrome/browser/favicon",
+  "+chrome/browser/platform_util.h",
+  "+chrome/browser/profiles",
+  "+chrome/browser/screen_ai",
+  "+chrome/browser/trusted_vault",
+  "+chrome/browser/ui/ash",
+  "+chrome/browser/ui/webui/ash/settings/calculator",
+  "+chrome/browser/ui/webui/ash/settings/pages/storage",
+  "+chrome/browser/ui/webui/ash/settings/search",
+  "+chrome/browser/ui/webui/ash/settings/services/settings_manager",
+  "+chrome/browser/ui/webui/ash/settings/test_support",
+  "+chrome/browser/web_applications/test",
+  "+chrome/common/channel_info.h",
+  "+chrome/common/chrome_constants.h",
+  "+chrome/common/chrome_paths.h",
+  "+chrome/grit",
+  "+chrome/test/base",
+
+  # Dependencies outside of //chrome:
+  "+ash/accelerators",
+  "+ash/strings/grit",
+  "+chromeos/ash/components/browser_context_helper",
+  "+chromeos/ash/components/history",
+  "+chromeos/ash/components/launcher_search",
+  "+chromeos/ash/components/system_info",
+  "+chromeos/ui/vector_icons",
+  "+third_party/omnibox_proto",
+]
+
+specific_include_rules = {
+  ".*(unittest|browsertest)\\.cc": [
+    "+chrome/browser/web_applications/web_app_provider.h",
+    "+chrome/browser/signin/chrome_signin_client_factory.h",
+    "+chrome/browser/signin/chrome_signin_client_test_util.h",
+    "+chrome/browser/signin/identity_manager_factory.h",
+    "+chrome/browser/signin/identity_test_environment_profile_adaptor.h",
+  ],
+  # AppDiscoveryMetricsManager reads the SyncService through
+  # ash::SyncServiceProvider; its test still installs the TestSyncService via
+  # the //chrome-side Profile-keyed factory.
+  "app_discovery_metrics_manager_unittest\\.cc": [
+    "+chrome/browser/sync",
+  ],
+
+  ".*browsertest\\.cc": [
+    "+chrome/browser/browser_process.h",
+    "+chrome/browser/ui/browser_commands.h",
+    "+chrome/browser/ui/browser_window.h",
+    "+chrome/browser/ui/browser_window/public/global_browser_collection.h",
+  ],
+  "file_search_provider\\.cc": [
+    "+chrome/browser/browser_process.h",
+  ],
+  "local_image_search_service_factory\\.cc": [
+    "+chrome/browser/browser_process.h",
+  ],
+
+  # Tests still need to install TemplateURLService through the //chrome-side
+  # Profile-keyed factory because ChromeAutocompleteProviderClient (constructed
+  # inside OmniboxProvider) calls TemplateURLServiceFactory::GetForProfile()
+  # unconditionally.
+  ".*unittest\\.cc": [
+    "+chrome/browser/ash/browser_delegate/keyed_service_provider",
+    "+chrome/browser/search_engines",
+  ],
+}

@@ -1,0 +1,14 @@
+Name: libei
+URL: https://gitlab.freedesktop.org/libinput/libei
+Version: 1.6.0
+Revision: 401ed364fd68a81988d0fd1234358dda1262e5f0
+Update Mechanism: Manual
+License: MIT
+License File: LICENSE
+Security Critical: yes
+Shipped: yes
+
+Description:
+This directory contains a copy of libei obtained from gitlab.
+
+Local Modifications: N/A

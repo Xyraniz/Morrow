@@ -1,0 +1,17 @@
+Name: gsettings-desktop-schemas
+URL: https://gitlab.gnome.org/GNOME/gsettings-desktop-schemas
+Version: 51.0
+Revision: 1db238b6a349ea7fae6f1c0713afe04d1bb7ea5c
+Update Mechanism: Autoroll
+License: LGPL-2.1
+License File: src/COPYING
+Shipped: no
+Security Critical: no
+
+Description:
+Shared GSettings schemas for the GNOME desktop.
+
+This is only used in tests.
+
+Local Modifications:
+None.

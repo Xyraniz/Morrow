@@ -1,0 +1,26 @@
+include_rules = [
+  # ChromeOS should not depend on //chrome. See //docs/chromeos/code.md for
+  # details.
+  "-chrome",
+]
+
+specific_include_rules = {
+  "clipboard_history_browsertest\\.cc": [
+    "+chrome/app/chrome_command_ids.h",
+    "+chrome/browser/ash/login/lock",
+    "+chrome/browser/ash/login/login_manager_test.h",
+    "+chrome/browser/ash/login/test",
+    "+chrome/browser/profiles/profile.h",
+    "+chrome/browser/renderer_context_menu",
+    "+chrome/browser/ui/ash/login",
+    "+chrome/browser/ui/tabs/tab_strip_model.h",
+    "+chrome/grit",
+  ],
+  "clipboard_history_interactive_uitest\\.cc": [
+    "+chrome/browser/ui/tabs/tab_strip_model.h",
+  ],
+  ".*test\\.cc": [
+    "+chrome/browser/ui/browser_window/public/browser_window_interface.h",
+    "+chrome/test",
+  ],
+}

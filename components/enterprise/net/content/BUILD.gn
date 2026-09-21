@@ -1,0 +1,36 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+static_library("content") {
+  public = [ "enterprise_proxy_tab_helper.h" ]
+  sources = [ "enterprise_proxy_tab_helper.cc" ]
+  public_deps = [
+    "//base",
+    "//components/enterprise/net/core",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//ui/base/unowned_user_data",
+    "//url",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "enterprise_proxy_tab_helper_unittest.cc" ]
+  deps = [
+    ":content",
+    "//base",
+    "//base/test:test_support",
+    "//components/enterprise/net/core",
+    "//components/enterprise/net/core:test_support",
+    "//components/tabs:test_support",
+    "//content/public/browser",
+    "//content/test:test_support",
+    "//net",
+    "//net:test_support",
+    "//testing/gmock",
+    "//testing/gtest",
+    "//url",
+  ]
+}

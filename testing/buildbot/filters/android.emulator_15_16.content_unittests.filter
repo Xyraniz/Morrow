@@ -1,0 +1,7 @@
+# crbug.com/327663433
+-AttributionOsLevelManagerAndroidTest.Register
+-AttributionOsLevelManagerAndroidTest.ClearData
+
+
+# crbug.com/362295873
+-FontUniqueNameLookupTest.TestMatchPostScriptNameTtc

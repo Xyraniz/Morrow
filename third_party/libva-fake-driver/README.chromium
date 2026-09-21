@@ -1,0 +1,16 @@
+Name: libva-fake-driver
+URL: https://chromium.googlesource.com/chromiumos/platform/libva-fake-driver/
+Version: N/A
+Revision: 04f902b9ba9f8083b19d22e7b55591bbcaae31c0
+Update Mechanism: Autoroll
+License: BSD-3-Clause
+License File: LICENSE
+Shipped: no
+Security Critical: no
+
+Description:
+The libva-fake-driver is an open source project that emulates a va-api driver
+and performs video decoding using sw decoders.
+
+Local Modifications:
+None

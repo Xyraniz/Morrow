@@ -1,0 +1,142 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef CHROME_BROWSER_UI_VIEWS_PAYMENTS_PAYMENT_HANDLER_HEADER_VIEW_UTIL_H_
+#define CHROME_BROWSER_UI_VIEWS_PAYMENTS_PAYMENT_HANDLER_HEADER_VIEW_UTIL_H_
+
+#include <memory>
+#include <optional>
+#include <string>
+
+#include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
+#include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
+#include "chrome/browser/ui/views/location_bar/location_icon_view.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/views/controls/button/image_button.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/controls/progress_bar.h"
+#include "ui/views/view.h"
+
+class PermissionDashboardView;
+class SkBitmap;
+
+namespace payments {
+
+// The progress bar used in the Payment Handler UI.
+class PaymentHandlerProgressBar : public views::ProgressBar {
+  METADATA_HEADER(PaymentHandlerProgressBar, views::ProgressBar)
+
+ public:
+  PaymentHandlerProgressBar();
+  ~PaymentHandlerProgressBar() override;
+
+  void SetThemeColor(std::optional<SkColor> theme_color);
+  void SetColorBasedOnBackground(SkColor background_color);
+
+  // views::View:
+  void OnThemeChanged() override;
+
+  base::WeakPtr<PaymentHandlerProgressBar> GetWeakPtr();
+
+ private:
+  void UpdateColors();
+
+  std::optional<SkColor> theme_color_;
+  base::WeakPtrFactory<PaymentHandlerProgressBar> weak_ptr_factory_{this};
+};
+
+// The origin label used in the header of the Payment Handler UI.
+class PaymentHandlerOriginLabel : public views::Label {
+  METADATA_HEADER(PaymentHandlerOriginLabel, views::Label)
+
+ public:
+  PaymentHandlerOriginLabel();
+  ~PaymentHandlerOriginLabel() override;
+
+  void SetThemeColor(std::optional<SkColor> theme_color);
+  void SetColorBasedOnBackground(SkColor background_color);
+
+  // views::View:
+  void OnThemeChanged() override;
+
+  base::WeakPtr<PaymentHandlerOriginLabel> GetWeakPtr();
+
+ private:
+  void UpdateColors();
+
+  std::optional<SkColor> theme_color_;
+  base::WeakPtrFactory<PaymentHandlerOriginLabel> weak_ptr_factory_{this};
+};
+
+// The close ('X') button used in the header of the Payment Handler UI.
+class PaymentHandlerCloseButton : public views::ImageButton {
+  METADATA_HEADER(PaymentHandlerCloseButton, views::ImageButton)
+
+ public:
+  explicit PaymentHandlerCloseButton(
+      views::Button::PressedCallback pressed_callback);
+  ~PaymentHandlerCloseButton() override;
+
+  void SetThemeColor(std::optional<SkColor> theme_color);
+  void SetColorBasedOnBackground(SkColor background_color);
+
+  // views::View:
+  void OnThemeChanged() override;
+
+  base::WeakPtr<PaymentHandlerCloseButton> GetWeakPtr();
+
+ private:
+  void UpdateColors();
+
+  std::optional<SkColor> theme_color_;
+  base::WeakPtrFactory<PaymentHandlerCloseButton> weak_ptr_factory_{this};
+};
+
+struct PaymentHandlerHeaderViews {
+  base::WeakPtr<PaymentHandlerOriginLabel> origin_label;
+  base::WeakPtr<PaymentHandlerCloseButton> close_button;
+};
+
+// Creates a disabled PageInfo icon for the splash screen.
+std::unique_ptr<views::View> CreatePaymentHandlerLoadingIconView();
+
+// Creates a LocationIconView for the live payment handler web flow.
+std::unique_ptr<LocationIconView> CreatePaymentHandlerLocationIconView(
+    IconLabelBubbleView::Delegate* icon_label_bubble_delegate,
+    LocationIconView::Delegate* location_icon_delegate);
+
+// Creates and configures a PermissionDashboardView for the camera access
+// indicator and permission prompt in the live payment handler web flow.
+std::unique_ptr<PermissionDashboardView>
+CreatePaymentHandlerPermissionDashboardView();
+
+// Populates a header view containing the icon (icon_view if provided, or app
+// icon bitmap if available), origin text, and the close button.
+PaymentHandlerHeaderViews PopulatePaymentHandlerHeaderView(
+    views::View* container,
+    std::unique_ptr<views::View> icon_view,
+    const SkBitmap* icon_bitmap,
+    const std::u16string& origin_text,
+    views::Button::PressedCallback close_callback);
+
+// Computes the effective background color for header subviews (e.g. origin
+// label, progress bar, close button). If `theme_color` is provided (e.g. from
+// an HTML head <meta name="theme-color"> tag), it is blended over the dialog's
+// background color (`ui::kColorDialogBackground`). Otherwise, the dialog's
+// background color is returned directly.
+SkColor GetEffectiveHeaderBackgroundColor(const views::View* view,
+                                          std::optional<SkColor> theme_color);
+
+// Computes and applies header backgrounds and item colors based on theme color.
+void SetHeaderColors(views::View* header_view,
+                     PaymentHandlerOriginLabel* origin_label,
+                     PaymentHandlerProgressBar* progress_bar,
+                     PaymentHandlerCloseButton* close_button,
+                     std::optional<SkColor> theme_color);
+
+}  // namespace payments
+
+#endif  // CHROME_BROWSER_UI_VIEWS_PAYMENTS_PAYMENT_HANDLER_HEADER_VIEW_UTIL_H_

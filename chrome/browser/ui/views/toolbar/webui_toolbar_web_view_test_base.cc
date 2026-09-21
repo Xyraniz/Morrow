@@ -1,0 +1,281 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view_test_base.h"
+
+#include "base/files/file_util.h"
+#include "base/functional/bind.h"
+#include "base/functional/function_ref.h"
+#include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
+#include "base/test/run_until.h"
+#include "build/build_config.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/extensions/chrome_test_extension_loader.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
+#include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
+#include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_ui.h"
+#include "chrome/common/chrome_features.h"
+#include "components/performance_manager/public/user_tuning/prefs.h"
+#include "components/prefs/pref_service.h"
+#include "content/public/common/content_features.h"
+#include "content/public/test/browser_test_utils.h"
+#include "extensions/common/extension.h"
+#include "extensions/common/extension_features.h"
+#include "ui/base/interaction/element_identifier.h"
+#include "ui/base/interaction/element_tracker.h"
+#include "ui/views/interaction/element_tracker_views.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_pref_names.h"
+#endif
+
+WebUIToolbarWebViewTestBase::WebUIToolbarWebViewTestBase()
+    : WebUIToolbarWebViewTestBase(
+          {features::kInitialWebUI, features::kWebUIReloadButton,
+           features::kWebUISplitTabsButton, features::kWebUIHomeButton,
+           features::kWebUIExtensionsContainer,
+           features::kSkipIPCChannelPausingForNonGuests,
+           features::kWebUIInProcessResourceLoadingV2,
+           // Needed for browser_tests_no_field_trial.
+           extensions_features::kExtensionsMenuAccessControl},
+          {features::kExtensionsPinnedByDefault}) {}
+
+WebUIToolbarWebViewTestBase::~WebUIToolbarWebViewTestBase() = default;
+
+void WebUIToolbarWebViewTestBase::SetUpOnMainThread() {
+  InProcessBrowserTest::SetUpOnMainThread();
+  // Force the color mode to light to avoid flakiness.
+  ThemeServiceFactory::GetForProfile(browser()->GetProfile())
+      ->SetBrowserColorScheme(ThemeService::BrowserColorScheme::kLight);
+}
+
+ToolbarView* WebUIToolbarWebViewTestBase::GetToolbarView(
+    BrowserWindowInterface* browser_instance) {
+  return BrowserView::GetBrowserViewForBrowser(
+             browser_instance ? browser_instance : browser())
+      ->toolbar();
+}
+
+WebUIToolbarWebView* WebUIToolbarWebViewTestBase::GetWebUIToolbar(
+    BrowserWindowInterface* browser_instance) {
+  return GetToolbarView(browser_instance)->GetWebUIToolbarViewForTesting();
+}
+
+content::WebContents* WebUIToolbarWebViewTestBase::GetWebUIWebContents(
+    BrowserWindowInterface* browser_instance) {
+  return GetWebUIToolbar(browser_instance)->GetWebContents();
+}
+
+content::EvalJsResult WebUIToolbarWebViewTestBase::SetSpacerWidth(
+    int width,
+    BrowserWindowInterface* browser_instance) {
+  return content::EvalJs(GetWebUIWebContents(browser_instance),
+                         content::JsReplace(
+                             R"((() => {
+        const app = document.querySelector('toolbar-app');
+        let spacer = app.shadowRoot.querySelector('#test-spacer');
+        if (!spacer) {
+          spacer = document.createElement('div');
+          spacer.id = 'test-spacer';
+          spacer.style.flexShrink = '0';
+          app.shadowRoot.appendChild(spacer);
+        }
+        spacer.style.width = $1 + 'px';
+        app.layoutResponsiveControls();
+        return true;
+      })();)",
+                             width));
+}
+
+ui::TrackedElement* WebUIToolbarWebViewTestBase::GetTrackedElement(
+    ui::ElementIdentifier id,
+    BrowserWindowInterface* browser_instance) {
+  return ui::ElementTracker::GetElementTracker()->GetUniqueElement(
+      id, views::ElementTrackerViews::GetContextForView(
+              GetToolbarView(browser_instance)));
+}
+
+bool WebUIToolbarWebViewTestBase::WaitForTrackedElements(
+    const std::vector<ui::ElementIdentifier>& visible,
+    const std::vector<ui::ElementIdentifier>& hidden,
+    BrowserWindowInterface* browser_instance) {
+  return base::test::RunUntil([&]() -> bool {
+    for (const auto& id : visible) {
+      if (!GetTrackedElement(id, browser_instance)) {
+        return false;
+      }
+    }
+    for (const auto& id : hidden) {
+      if (GetTrackedElement(id, browser_instance)) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+ui::TrackedElement* WebUIToolbarWebViewTestBase::WaitForTrackedElementVisible(
+    ui::ElementIdentifier id,
+    BrowserWindowInterface* browser_instance) {
+  EXPECT_TRUE(WaitForTrackedElements({id}, {}, browser_instance));
+  return GetTrackedElement(id, browser_instance);
+}
+
+bool WebUIToolbarWebViewTestBase::WaitForTrackedElementHidden(
+    ui::ElementIdentifier id,
+    BrowserWindowInterface* browser_instance) {
+  return WaitForTrackedElements({}, {id}, browser_instance);
+}
+
+void WebUIToolbarWebViewTestBase::EnableBatterySaverButton(
+    content::WebContents* webui_web_contents) {
+  if (!webui_web_contents) {
+    webui_web_contents = GetWebUIWebContents();
+  }
+#if BUILDFLAG(IS_CHROMEOS)
+  g_browser_process->local_state()->SetBoolean(ash::prefs::kPowerBatterySaver,
+                                               true);
+#else
+  g_browser_process->local_state()->SetInteger(
+      performance_manager::user_tuning::prefs::kBatterySaverModeState,
+      static_cast<int>(performance_manager::user_tuning::prefs::
+                           BatterySaverModeState::kEnabled));
+#endif
+
+  // Verify the button element becomes visible.
+  EXPECT_TRUE(WaitForButtonVisible(webui_web_contents, "#battery-saver"));
+  // Wait for the ElementTracker to be updated.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return ui::ElementTracker::GetElementTracker()->IsElementVisible(
+        kToolbarBatterySaverButtonElementId,
+        BrowserElements::From(browser())->GetContext());
+  }));
+}
+
+WebUIToolbarWebViewTestBase::WebUIToolbarWebViewTestBase(
+    const std::vector<base::test::FeatureRef>& enabled,
+    const std::vector<base::test::FeatureRef>& disabled) {
+  feature_list_.InitWithFeatures(enabled, disabled);
+}
+
+void WebUIToolbarWebViewTestBase::SimulateDropOnToolbar(
+    content::WebContents* web_contents,
+    const std::string& text) {
+  EXPECT_TRUE(content::ExecJs(web_contents, base::StringPrintf(R"(
+    const toolbarApp = document.querySelector('toolbar-app');
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/plain', "%s");
+    const dropEvent = new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: dataTransfer
+    });
+    toolbarApp.dispatchEvent(dropEvent);
+  )",
+                                                               text.c_str())));
+}
+
+void WebUIToolbarWebViewTestBase::SimulateUriListDropOnToolbar(
+    content::WebContents* web_contents,
+    const std::string& url) {
+  EXPECT_TRUE(content::ExecJs(web_contents, base::StringPrintf(R"(
+    const toolbarApp = document.querySelector('toolbar-app');
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/uri-list', "%s");
+    const dropEvent = new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: dataTransfer
+    });
+    toolbarApp.dispatchEvent(dropEvent);
+  )",
+                                                               url.c_str())));
+}
+
+scoped_refptr<const extensions::Extension>
+WebUIToolbarWebViewTestBase::LoadAndPinExtension(
+    WebUIToolbarWebView* webui_toolbar_view,
+    base::ScopedTempDir& temp_dir,
+    bool has_background_script,
+    bool has_popup) {
+  scoped_refptr<const extensions::Extension> extension =
+      LoadExtension(temp_dir, has_background_script, has_popup);
+  if (!extension) {
+    return nullptr;
+  }
+
+  // Pin the extension so it becomes visible.
+  ToolbarActionsModel::Get(browser()->GetProfile())
+      ->SetActionVisibility(extension->id(), true);
+
+  base::RunLoop run_loop;
+  webui_toolbar_view->extensions_container_.OnActionPoppedOut(
+      run_loop.QuitClosure());
+  run_loop.Run();
+
+  return extension;
+}
+
+scoped_refptr<const extensions::Extension>
+WebUIToolbarWebViewTestBase::LoadExtension(base::ScopedTempDir& temp_dir,
+                                           bool has_background_script,
+                                           bool has_popup) {
+  base::FilePath manifest_path =
+      temp_dir.GetPath().AppendASCII("manifest.json");
+
+  std::string background_section = "";
+  if (has_background_script) {
+    background_section = R"(
+      , "background": {
+        "service_worker": "background.js"
+      }
+    )";
+    base::FilePath script_path =
+        temp_dir.GetPath().AppendASCII("background.js");
+    std::string script_content = R"(
+      chrome.action.onClicked.addListener(() => {
+        chrome.test.sendMessage("clicked");
+      });
+    )";
+    EXPECT_TRUE(base::WriteFile(script_path, script_content));
+  }
+
+  std::string action_section = "{}";
+  if (has_popup) {
+    action_section = R"({"default_popup": "popup.html"})";
+    base::FilePath popup_path = temp_dir.GetPath().AppendASCII("popup.html");
+    EXPECT_TRUE(base::WriteFile(popup_path, "<html><body>Popup</body></html>"));
+  }
+
+  std::string manifest_content =
+      base::StringPrintf(R"({
+    "name": "Test Extension",
+    "version": "1.0",
+    "manifest_version": 3,
+    "action": %s
+    %s,
+    "host_permissions": ["*://allowed.com/*"]
+  })",
+                         action_section.c_str(), background_section.c_str());
+
+  EXPECT_TRUE(base::WriteFile(manifest_path, manifest_content));
+
+  extensions::ChromeTestExtensionLoader loader(browser()->GetProfile());
+  scoped_refptr<const extensions::Extension> extension =
+      loader.LoadExtension(temp_dir.GetPath());
+  EXPECT_TRUE(extension);
+
+  return extension;
+}

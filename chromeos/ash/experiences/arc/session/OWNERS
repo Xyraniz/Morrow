@@ -1,0 +1,9 @@
+per-file arc_bridge_policy.jsonc=sstan@chromium.org
+
+khmel@chromium.org
+lgcheng@google.com
+niwa@chromium.org
+# backup reviewers
+hashimoto@chromium.org #{LAST_RESORT_SUGGESTION}
+hidehiko@chromium.org #{LAST_RESORT_SUGGESTION}
+jhorwich@chromium.org #{LAST_RESORT_SUGGESTION}

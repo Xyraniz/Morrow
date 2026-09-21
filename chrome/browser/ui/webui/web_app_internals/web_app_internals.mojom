@@ -1,0 +1,21 @@
+// Copyright 2023 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module mojom;
+
+// Factory ensures that the handler interface is created with the WebUI page
+// without requiring an initialization call from the WebUI to the handler.
+interface PageHandlerFactory {
+  // Creates the `handler` to be used for communication between the Browser and
+  // the Renderer.
+  CreateWebAppInternalsHandler(
+      pending_receiver<WebAppInternalsHandler> handler);
+};
+
+// Handles requests from chrome://web-app-internals.
+// This is expected to be hosted in the browser process.
+interface WebAppInternalsHandler {
+  // Returns Web App related debug information as a JSON string.
+  GetDebugInfoAsJsonString() => (string result);
+};

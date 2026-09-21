@@ -1,0 +1,410 @@
+// Copyright 2014 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef CHROME_BROWSER_EXTENSIONS_EXTENSION_MANAGEMENT_H_
+#define CHROME_BROWSER_EXTENSIONS_EXTENSION_MANAGEMENT_H_
+
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "base/containers/flat_map.h"
+#include "base/feature_list.h"
+#include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
+#include "base/observer_list.h"
+#include "base/values.h"
+#include "chrome/browser/profiles/profile_keyed_service_factory.h"
+#include "components/keyed_service/core/keyed_service.h"
+#include "components/prefs/pref_change_registrar.h"
+#include "extensions/browser/extension_management_client.h"
+#include "extensions/browser/forced_extensions/install_stage_tracker.h"
+#include "extensions/browser/managed_installation_mode.h"
+#include "extensions/browser/management_policy.h"
+#include "extensions/buildflags/buildflags.h"
+#include "extensions/common/extension_id.h"
+#include "extensions/common/manifest.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
+class GURL;
+class PrefService;
+class Profile;
+
+namespace content {
+class BrowserContext;
+}  // namespace content
+
+namespace extensions {
+
+enum class ManagedToolbarPinMode;
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+BASE_DECLARE_FEATURE(
+    kDisableForceInstalledExtensionsInLowTrustEnviromentWhenGreylisted);
+BASE_DECLARE_FEATURE(kBlockPolicyDseNtpOverridesInLowTrust);
+#endif
+
+namespace internal {
+
+struct IndividualSettings;
+struct GlobalSettings;
+
+}  // namespace internal
+
+class APIPermissionSet;
+class CWSInfoServiceInterface;
+class Extension;
+class LowTrustPolicyInstallBlockManager;
+class PermissionSet;
+
+// Tracks the management policies that affect extensions and provides interfaces
+// for observing and obtaining the global settings for all extensions, as well
+// as per-extension settings.
+class ExtensionManagement : public KeyedService,
+                            public ExtensionManagementClient {
+ public:
+  // Observer class for extension management settings changes.
+  class Observer {
+   public:
+    virtual ~Observer() = default;
+
+    // Called when the extension management settings change.
+    virtual void OnExtensionManagementSettingsChanged() = 0;
+  };
+
+  explicit ExtensionManagement(Profile* profile);
+
+  ExtensionManagement(const ExtensionManagement&) = delete;
+  ExtensionManagement& operator=(const ExtensionManagement&) = delete;
+
+  ~ExtensionManagement() override;
+
+  // KeyedService implementations:
+  void Shutdown() override;
+
+  // ExtensionManagementClient implementations:
+  bool UpdatesFromWebstore(const Extension& extension) override;
+  bool IsInstallationExplicitlyAllowed(const ExtensionId& id) override;
+  bool IsForceInstalledInLowTrustEnvironment(
+      const Extension& extension) override;
+  const URLPatternSet& GetPolicyBlockedHosts(
+      const Extension* extension) override;
+  const URLPatternSet& GetPolicyAllowedHosts(
+      const Extension* extension) override;
+  bool UsesDefaultPolicyHostRestrictions(const Extension* extension) override;
+  bool BlocklistedByDefault() const override;
+  GURL GetEffectiveUpdateURL(const Extension& extension) override;
+  bool IsAllowedManifestType(Manifest::Type manifest_type,
+                             const std::string& extension_id) const override;
+  bool IsInstallationExplicitlyBlocked(const ExtensionId& id) override;
+  const std::string BlockedInstallMessage(const ExtensionId& id) override;
+  bool IsPermissionSetAllowed(const Extension* extension,
+                              const PermissionSet& perms) override;
+  bool IsPermissionSetAllowed(const ExtensionId& extension_id,
+                              const std::string& update_url,
+                              const PermissionSet& perms) override;
+
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
+
+  // Get the list of ManagementPolicy::Provider controlled by extension
+  // management policy settings.
+  const std::vector<std::unique_ptr<ManagementPolicy::Provider>>& GetProviders()
+      const;
+
+  // Returns the force install list, in format specified by
+  // ExternalPolicyLoader::AddExtension().
+  base::DictValue GetForceInstallList() const;
+
+  // Like GetForceInstallList(), but returns recommended install list instead.
+  base::DictValue GetRecommendedInstallList() const;
+
+  // Returns `true` if there is at least one extension with
+  // `INSTALLATION_ALLOWED` as installation mode. This excludes force installed
+  // extensions.
+  bool HasAllowlistedExtension();
+
+  // Returns if an extension with `id` is force installed and the update URL is
+  // overridden by policy.
+  bool IsUpdateUrlOverridden(const ExtensionId& id);
+
+  // Returns true if an extension download should be allowed to proceed.
+  bool IsOffstoreInstallAllowed(const GURL& url,
+                                const GURL& referrer_url) const;
+
+  bool IsAllowedByUnpublishedAvailabilityPolicy(const Extension* extension);
+
+  // Returns false if the extension is loaded as unpacked and the developer mode
+  // is OFF.
+  bool IsAllowedByUnpackedDeveloperModePolicy(const Extension& extension);
+
+  // Returns true if a greylisted extension is force-installed in a low-trust
+  // environment. Only applies to Windows and MacOS.
+  bool IsGreylistedForceInstalledInLowTrustEnvironment(
+      const ExtensionId& extension_id);
+
+  // Returns true if an off-store extension is force-installed in low trust
+  // environments. Only trusted environments like domain-joined devices or
+  // cloud-managed user profiles are allowed to force-install off-store
+  // extensions. All other devices and users may still install policy extensions
+  // but they must be hosted within the web store. See https://b/283274398.
+  bool ShouldBlockForceInstalledOffstoreExtension(const Extension& extension);
+
+  // Returns true if low-trust policy enforcement is active for this browser
+  // instance (Windows or Mac without trusted enterprise management).
+  bool IsLowTrustEnforcementActive() const;
+
+  // Returns true if low-trust DSE/NTP policy install blocking is active
+  // (the feature is enabled and low-trust enforcement is active).
+  bool IsDseNtpOverrideBlockingActive() const;
+
+  // Returns true if the policy-installed extension should be blocked because
+  // it overrides DSE/NTP settings in a low-trust environment (where neither
+  // the device nor the browser profile is managed by a trusted authority).
+  bool ShouldBlockPolicyInstalledDseNtpOverrideExtension(
+      const Extension& extension);
+
+  // Returns true if the policy-installed extension is recorded as blocked in
+  // preferences in a low-trust environment (where neither the device nor the
+  // browser profile is managed by a trusted authority).
+  bool IsExtensionBlockedByLowTrust(const ExtensionId& extension_id) const;
+  // Installation mode.
+  // These return run-time (effective) values which can be different from
+  // the configured policy. For example, if a force-install policy is blocked
+  // in a low-trust environment and a user installs the same extension
+  // manually, then these variants would return values reflecting user install.
+  // Use these methods for UI and general runtime checks.
+  ManagedInstallationMode GetInstallationMode(
+      const Extension* extension) override;
+  ManagedInstallationMode GetInstallationMode(
+      const ExtensionId& extension_id,
+      const std::string& update_url) override;
+
+  // Configured variants:
+  // Use these to retrieve the raw policy configuration values set by the
+  // administrator, rather than the active runtime states.
+  //
+  // The configured value and the operational runtime value can differ when
+  // Chrome overrides the policy (e.g., when a forced or recommended policy
+  // installation of a search extension is blocked in a low-trust management
+  // environment, in which case the effective mode is overridden to kAllowed).
+  //
+  // These raw values are used for security functions like intercepting and
+  // blocking policy installs.
+  ManagedInstallationMode GetConfiguredInstallationMode(
+      const Extension& extension);
+  ManagedInstallationMode GetConfiguredInstallationMode(
+      const ExtensionId& extension_id,
+      const std::string& update_url);
+
+  // Returns true if the policy configuration targets this extension for
+  // automated installation (either forced or recommended), ignoring runtime
+  // overrides.
+  bool IsForcedOrRecommendedInstallConfigured(const Extension& extension);
+
+  // Use this variant as a best-effort check when only the ID is available.
+  // Note that this will miss policies that target extensions by update URL.
+  bool IsForcedOrRecommendedInstallConfigured(const ExtensionId& extension_id);
+
+  // Use this variant when the extension is not installed (e.g. blocked) but
+  // we have cached metadata (like update URL) available, to ensure update-URL
+  // policies are correctly resolved.
+  bool IsForcedOrRecommendedInstallConfigured(const ExtensionId& extension_id,
+                                              const std::string& update_url);
+
+  // Returns the list of blocked API permissions for `extension`.
+  APIPermissionSet GetBlockedAPIPermissions(const Extension* extension);
+
+  // Returns the list of blocked API permissions for an extension with id
+  // `extension_id` and updated with `update_url`.
+  APIPermissionSet GetBlockedAPIPermissions(const ExtensionId& extension_id,
+                                            const std::string& update_url);
+
+  // Returns the list of hosts blocked by policy for Default scope. This can be
+  // overridden by an individual scope which is queried via
+  // GetPolicyBlockedHosts.
+  const URLPatternSet& GetDefaultPolicyBlockedHosts() const;
+
+  // Returns the hosts exempted by policy from PolicyBlockedHosts for
+  // the default scope. This can be overridden by an individual scope which is
+  // queries via GetPolicyAllowedHosts. This should only be used to
+  // initialize a new renderer.
+  const URLPatternSet& GetDefaultPolicyAllowedHosts() const;
+
+  // Returns blocked permission set for `extension`.
+  std::unique_ptr<const PermissionSet> GetBlockedPermissions(
+      const Extension* extension);
+
+  // Returns true if `extension` meets the minimum required version set for it.
+  // If there is no such requirement set for it, returns true as well.
+  // If false is returned and `required_version` is not null, the minimum
+  // required version is returned.
+  bool CheckMinimumVersion(const Extension* extension,
+                           std::string* required_version);
+
+  // Returns the list of extensions with "force_pinned" mode for the
+  // "toolbar_pin" setting. This only considers policies that are loaded (e.g.
+  // aren't deferred).
+  ExtensionIdSet GetForcePinnedList() const;
+
+  // Returns if an extension with `id` can navigate to file URLs.
+  bool IsFileUrlNavigationAllowed(const ExtensionId& id);
+
+  // Returns the toolbar pin mode for `extension_id`.
+  extensions::ManagedToolbarPinMode GetToolbarPinMode(
+      const ExtensionId& extension_id);
+
+  // Returns the manager for tracking policy extensions blocked in low-trust
+  // environments.
+  LowTrustPolicyInstallBlockManager* low_trust_block_manager() const {
+    return low_trust_block_manager_.get();
+  }
+
+ private:
+  using SettingsIdMap =
+      base::flat_map<ExtensionId,
+                     std::unique_ptr<internal::IndividualSettings>>;
+  using SettingsUpdateUrlMap =
+      base::flat_map<std::string,
+                     std::unique_ptr<internal::IndividualSettings>>;
+  friend class ExtensionManagementServiceTest;
+
+  // Load all extension management preferences from `pref_service`, and
+  // refresh the settings.
+  void Refresh();
+
+  // Tries to parse the individual setting in `settings_by_id_` for
+  // `extension_id`. Returns true if it succeeds, otherwise returns false and
+  // removes the entry from `settings_by_id_`.
+  bool ParseById(const std::string& extension_id,
+                 const base::DictValue& subdict);
+
+  // Returns the individual settings for `extension_id` if it exists, otherwise
+  // returns nullptr. This method will also lazy load the settings if they're
+  // not loaded yet.
+  internal::IndividualSettings* GetSettingsForId(
+      const std::string& extension_id);
+
+  // Loads the deferred settings information for `extension_id`.
+  void LoadDeferredExtensionSetting(const std::string& extension_id);
+
+  // Loads preference with name `pref_name` and expected type `expected_type`.
+  // If `force_managed` is true, only loading from the managed preference store
+  // is allowed. Returns NULL if the preference is not present, not allowed to
+  // be loaded from or has the wrong type.
+  const base::Value* LoadPreference(const char* pref_name,
+                                    bool force_managed,
+                                    base::Value::Type expected_type) const;
+
+  // Loads the dictionary preference with name `pref_name` - see
+  // `LoadPreference` for more details.
+  const base::DictValue* LoadDictPreference(const char* pref_name,
+                                            bool force_managed) const;
+
+  // Loads the list preference with name `pref_name` - see `LoadPreference` for
+  // more details.
+  const base::ListValue* LoadListPreference(const char* pref_name,
+                                            bool force_managed) const;
+
+  void OnExtensionPrefChanged();
+  void NotifyExtensionManagementPrefChanged();
+
+  // Reports install creation stage to InstallStageTracker for the extensions.
+  // `forced_stage` is reported for the extensions which have installation mode
+  // as INSTALLATION_FORCED, and `other_stage` is reported for all other
+  // installation modes.
+  void ReportExtensionManagementInstallCreationStage(
+      InstallStageTracker::InstallCreationStage forced_stage,
+      InstallStageTracker::InstallCreationStage other_stage);
+
+  // Helper to return an extension install list, in format specified by
+  // ExternalPolicyLoader::AddExtension().
+  base::DictValue GetInstallListByMode(
+      ManagedInstallationMode installation_mode) const;
+
+  // Helper to update `extension_dict` for forced installs.
+  void UpdateForcedExtensions(const base::DictValue* extension_dict);
+
+  // Helper function to access `settings_by_id_` with `id` as key.
+  // Adds a new IndividualSettings entry to `settings_by_id_` if none exists for
+  // `id` yet.
+  internal::IndividualSettings* AccessById(const ExtensionId& id);
+
+  // Similar to AccessById(), but access `settings_by_update_url_` instead.
+  internal::IndividualSettings* AccessByUpdateUrl(
+      const std::string& update_url);
+
+  // A map containing all IndividualSettings applied to an individual extension
+  // identified by extension ID. The extension ID is used as index key of the
+  // map.
+  SettingsIdMap settings_by_id_;
+
+  // A set of extension IDs whose parsing of settings and insertion into
+  // `settings_by_id_` has been deferred until needed. We keep track of this to
+  // avoid scanning the prefs repeatedly for entries that don't have a setting.
+  absl::flat_hash_set<std::string> deferred_ids_;
+
+  // Similar to `settings_by_id_`, but contains the settings for a group of
+  // extensions with same update URL. The update url itself is used as index
+  // key for the map.
+  SettingsUpdateUrlMap settings_by_update_url_;
+
+  // The default IndividualSettings.
+  // For extension settings applied to an individual extension (identified by
+  // extension ID) or a group of extension (with specified extension update
+  // URL), all unspecified part will take value from `default_settings_`.
+  // For all other extensions, all settings from `default_settings_` will be
+  // enforced.
+  std::unique_ptr<internal::IndividualSettings> default_settings_;
+
+  // Extension settings applicable to all extensions.
+  std::unique_ptr<internal::GlobalSettings> global_settings_;
+
+  const raw_ptr<Profile> profile_ = nullptr;
+  raw_ptr<PrefService> pref_service_ = nullptr;
+  bool is_signin_profile_ = false;
+
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      Observer,
+      /*check_empty=*/true,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked
+      observer_list_;
+  PrefChangeRegistrar pref_change_registrar_;
+  std::vector<std::unique_ptr<ManagementPolicy::Provider>> providers_;
+
+  // Unowned pointer to the CWSInfoService keyed-service instance for this
+  // profile. The service provides information about CWS publish status for
+  // extensions.
+  raw_ptr<CWSInfoServiceInterface> cws_info_service_ = nullptr;
+
+  std::unique_ptr<LowTrustPolicyInstallBlockManager> low_trust_block_manager_;
+};
+
+class ExtensionManagementFactory : public ProfileKeyedServiceFactory {
+ public:
+  ExtensionManagementFactory(const ExtensionManagementFactory&) = delete;
+  ExtensionManagementFactory& operator=(const ExtensionManagementFactory&) =
+      delete;
+
+  static ExtensionManagement* GetForBrowserContext(
+      content::BrowserContext* context);
+  static ExtensionManagementFactory* GetInstance();
+
+ private:
+  friend base::NoDestructor<ExtensionManagementFactory>;
+
+  ExtensionManagementFactory();
+  ~ExtensionManagementFactory() override;
+
+  // BrowserContextKeyedServiceExtensionManagementFactory:
+  std::unique_ptr<KeyedService> BuildServiceInstanceForBrowserContext(
+      content::BrowserContext* context) const override;
+};
+
+}  // namespace extensions
+
+#endif  // CHROME_BROWSER_EXTENSIONS_EXTENSION_MANAGEMENT_H_

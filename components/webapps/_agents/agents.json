@@ -1,0 +1,10 @@
+{
+  "entries": [
+    {
+      "path": "components/webapps/_agents/agents"
+    },
+    {
+      "path": "components/webapps/_agents/_harness/agents"
+    }
+  ]
+}

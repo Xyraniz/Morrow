@@ -1,0 +1,103 @@
+// Copyright 2013 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef CHROME_BROWSER_UI_WEBUI_ASH_NETWORK_UI_NETWORK_UI_H_
+#define CHROME_BROWSER_UI_WEBUI_ASH_NETWORK_UI_NETWORK_UI_H_
+
+#include "ash/constants/webui_url_constants.h"
+#include "base/memory/raw_ref.h"
+#include "base/values.h"
+#include "chromeos/ash/services/cellular_setup/public/mojom/esim_manager.mojom-forward.h"
+#include "chromeos/ash/services/connectivity/public/mojom/passpoint.mojom-forward.h"
+#include "chromeos/services/network_config/public/mojom/cros_network_config.mojom-forward.h"
+#include "chromeos/services/network_health/public/mojom/network_diagnostics.mojom-forward.h"
+#include "chromeos/services/network_health/public/mojom/network_health.mojom-forward.h"
+#include "content/public/browser/webui_config.h"
+#include "content/public/common/url_constants.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "ui/webui/mojo_web_ui_controller.h"
+
+class PrefService;
+
+namespace content {
+class WebUIMessageHandler;
+}  // namespace content
+
+namespace ash {
+
+class NetworkUI;
+
+// WebUIConfig for chrome://network
+class NetworkUIConfig : public content::WebUIConfig {
+ public:
+  // `local_state` must be non-null and must outlive `this`.
+  explicit NetworkUIConfig(PrefService* local_state);
+
+  NetworkUIConfig(const NetworkUIConfig&) = delete;
+  NetworkUIConfig& operator=(const NetworkUIConfig&) = delete;
+
+  ~NetworkUIConfig() override;
+
+  std::unique_ptr<content::WebUIController> CreateWebUIController(
+      content::WebUI* web_ui,
+      const GURL& url) override;
+
+ private:
+  const raw_ref<PrefService> local_state_;
+};
+
+// WebUI controller for chrome://network debugging page.
+class NetworkUI : public ui::MojoWebUIController {
+ public:
+  // `local_state` must be non-null and must outlive `this`.
+  NetworkUI(PrefService* local_state, content::WebUI* web_ui);
+
+  NetworkUI(const NetworkUI&) = delete;
+  NetworkUI& operator=(const NetworkUI&) = delete;
+
+  ~NetworkUI() override;
+
+  static base::DictValue GetLocalizedStrings();
+
+  // `local_state` must be non-null and must outlive the returned handler.
+  static std::unique_ptr<content::WebUIMessageHandler>
+  CreateNetworkConfigMessageHandlerForTesting(PrefService* local_state);
+
+  // Instantiates implementation of the mojom::CrosNetworkConfig mojo interface
+  // passing the pending receiver that will be internally bound.
+  void BindInterface(
+      mojo::PendingReceiver<chromeos::network_config::mojom::CrosNetworkConfig>
+          receiver);
+
+  // Instantiates implementation of the mojom::NetworkHealthService mojo
+  // interface passing the pending receiver that will be bound.
+  void BindInterface(
+      mojo::PendingReceiver<
+          chromeos::network_health::mojom::NetworkHealthService> receiver);
+
+  // Instantiates implementation of the mojom::NetworkDiagnosticsRoutines mojo
+  // interface passing the pending receiver that will be bound.
+  void BindInterface(
+      mojo::PendingReceiver<
+          chromeos::network_diagnostics::mojom::NetworkDiagnosticsRoutines>
+          receiver);
+
+  // Instantiates implementor of the mojom::ESimManager mojo interface
+  // passing the pending receiver that will be internally bound.
+  void BindInterface(
+      mojo::PendingReceiver<cellular_setup::mojom::ESimManager> receiver);
+
+  // Instantiates the implementation of mojom::PasspointService mojo interface
+  // passing the pending receiver that will be internally bound.
+  void BindInterface(
+      mojo::PendingReceiver<chromeos::connectivity::mojom::PasspointService>
+          receiver);
+
+ private:
+  WEB_UI_CONTROLLER_TYPE_DECL();
+};
+
+}  // namespace ash
+
+#endif  // CHROME_BROWSER_UI_WEBUI_ASH_NETWORK_UI_NETWORK_UI_H_

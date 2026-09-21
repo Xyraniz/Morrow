@@ -1,0 +1,564 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/ozone.gni")
+import("//build/config/ui.gni")
+import("//extensions/buildflags/buildflags.gni")
+
+assert(toolkit_views)
+
+source_set("custom_cursor_suppressor") {
+  public = [ "custom_cursor_suppressor.h" ]
+  sources = [ "custom_cursor_suppressor.cc" ]
+  public_deps = [
+    "//base",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/tabs:tab_strip",
+    "//content/public/browser",
+    "//extensions/browser",
+  ]
+  deps = [ "//chrome/browser/profiles:profile" ]
+}
+
+source_set("popup_interactive_row_view") {
+  public = [ "popup_interactive_row_view.h" ]
+  sources = [ "popup_interactive_row_view.cc" ]
+  public_deps = [
+    "//components/input",
+    "//ui/base/metadata",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_row_content_view") {
+  public = [ "popup_row_content_view.h" ]
+  sources = [ "popup_row_content_view.cc" ]
+  public_deps = [
+    "//base",
+    "//ui/views",
+  ]
+  deps = [
+    ":popup",
+    "//chrome/browser/ui/views:layout_provider",
+    "//ui/base/metadata",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_impl") {
+  sources = [
+    "popup_base_view.cc",
+    "popup_row_view.cc",
+    "popup_view_utils.cc",
+  ]
+  public_deps = [
+    ":popup",
+    "//chrome/browser:browser_public_dependencies",
+  ]
+  deps = [
+    ":custom_cursor_suppressor",
+    ":lazy_loading_image_view",
+    ":password_favicon_loader",
+    ":popup_at_memory_ai_disclosure_view",
+    ":popup_bnpl_footnote_view",
+    ":popup_cell_utils",
+    ":popup_centered_text_view",
+    ":popup_interactive_row_view",
+    ":popup_loading_view",
+    ":popup_notice_view",
+    ":popup_row_content_view",
+    ":popup_row_factory_utils",
+    ":popup_row_with_button_view",
+    ":popup_search_bar_view",
+    ":popup_separator_view",
+    ":popup_title_view",
+    ":popup_view_views",
+    ":popup_warning_view",
+    "//base",
+    "//chrome/browser/picture_in_picture",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/themes",
+    "//chrome/browser/ui/autofill",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/extensions:extension_popup",
+    "//chrome/browser/ui/views/interaction",
+    "//chrome/browser/ui/views/permissions",
+    "//components/autofill/core/browser",
+    "//components/autofill/core/common",
+    "//components/feature_engagement/public",
+    "//components/input",
+    "//components/strings:components_strings",
+    "//content/public/browser",
+    "//extensions/common:common_constants",
+    "//skia",
+    "//ui/accessibility:ax_base",
+    "//ui/accessibility:ax_enums_mojo",
+    "//ui/base",
+    "//ui/base/metadata",
+    "//ui/color",
+    "//ui/display",
+    "//ui/events",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//ui/views",
+  ]
+
+  if (use_ozone) {
+    deps += [ "//ui/ozone" ]
+  }
+}
+
+source_set("popup_view_views") {
+  public = [ "popup_view_views.h" ]
+  public_deps = [
+    ":password_favicon_loader",
+    ":popup",
+    ":popup_interactive_row_view",
+    ":popup_search_bar_view",
+    "//base",
+    "//chrome/browser/ui/autofill",
+    "//components/autofill/core/browser",
+    "//components/autofill/core/common",
+    "//components/input",
+    "//ui/accessibility:ax_base",
+    "//ui/base",
+    "//ui/base/metadata",
+    "//ui/events",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_view_views_impl") {
+  sources = [ "popup_view_views.cc" ]
+  public_deps = [
+    ":popup_view_views",
+    "//chrome/browser:browser_public_dependencies",
+  ]
+  deps = [
+    ":lazy_loading_image_view",
+    ":password_favicon_loader",
+    ":popup",
+    ":popup_at_memory_ai_disclosure_view",
+    ":popup_bnpl_footnote_view",
+    ":popup_cell_utils",
+    ":popup_centered_text_view",
+    ":popup_interactive_row_view",
+    ":popup_loading_view",
+    ":popup_notice_view",
+    ":popup_row_content_view",
+    ":popup_row_factory_utils",
+    ":popup_search_bar_view",
+    ":popup_separator_view",
+    ":popup_title_view",
+    ":popup_warning_view",
+    "//base",
+    "//chrome/app/vector_icons",
+    "//chrome/browser:browser_process",
+    "//chrome/browser/favicon",
+    "//chrome/browser/image_fetcher",
+    "//chrome/browser/media/webrtc",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/sync",
+    "//chrome/browser/ui:browser_element_identifiers",
+    "//chrome/browser/ui:chrome_pages",
+    "//chrome/browser/ui/autofill",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/passwords",
+    "//chrome/browser/ui/views:layout_provider",
+    "//chrome/common:constants",
+    "//components/autofill/content/browser",
+    "//components/autofill/core/browser",
+    "//components/autofill/core/common",
+    "//components/favicon/core",
+    "//components/image_fetcher/core",
+    "//components/input",
+    "//components/optimization_guide/core:features",
+    "//components/optimization_guide/core:model_execution",
+    "//components/password_manager/core/browser",
+    "//components/prefs",
+    "//components/strings:components_strings",
+    "//components/sync/service",
+    "//components/user_education/common",
+    "//content/public/browser",
+    "//ui/accessibility:ax_base",
+    "//ui/base",
+    "//ui/base/metadata",
+    "//ui/color",
+    "//ui/display",
+    "//ui/events",
+    "//ui/events/blink",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//ui/views",
+  ]
+}
+
+source_set("popup") {
+  public = [
+    "popup_base_view.h",
+    "popup_row_view.h",
+    "popup_view_utils.h",
+  ]
+  public_deps = [
+    ":custom_cursor_suppressor",
+    ":popup_interactive_row_view",
+    "//base",
+    "//chrome/browser/ui:chrome_pages",
+    "//chrome/browser/ui/autofill",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/ui/views:layout_provider",
+    "//components/autofill/core/browser",
+    "//components/autofill/core/common",
+    "//components/input",
+    "//content/public/browser",
+    "//extensions/browser",
+    "//ui/accessibility",
+    "//ui/base",
+    "//ui/base/metadata",
+    "//ui/color",
+    "//ui/events",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_separator_view") {
+  public = [ "popup_separator_view.h" ]
+  sources = [ "popup_separator_view.cc" ]
+  public_deps = [
+    "//ui/accessibility:ax_base",
+    "//ui/views",
+  ]
+  deps = [
+    "//ui/accessibility:ax_enums_mojo",
+    "//ui/base/metadata",
+    "//ui/color",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_centered_text_view") {
+  public = [ "popup_centered_text_view.h" ]
+  sources = [ "popup_centered_text_view.cc" ]
+  public_deps = [ "//ui/views" ]
+  deps = [
+    ":popup",
+    "//base",
+    "//ui/base/metadata",
+    "//ui/color",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_title_view") {
+  public = [ "popup_title_view.h" ]
+  sources = [ "popup_title_view.cc" ]
+  public_deps = [
+    "//ui/accessibility:ax_base",
+    "//ui/accessibility:ax_enums_mojo",
+    "//ui/views",
+  ]
+  deps = [
+    ":popup",
+    "//base",
+    "//chrome/browser/ui/views:layout_provider",
+    "//components/autofill/core/browser",
+    "//ui/base/metadata",
+    "//ui/color",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_warning_view") {
+  public = [ "popup_warning_view.h" ]
+  sources = [ "popup_warning_view.cc" ]
+  public_deps = [
+    "//components/autofill/core/browser",
+    "//ui/accessibility:ax_base",
+    "//ui/views",
+  ]
+  deps = [
+    ":popup",
+    "//base",
+    "//chrome/browser/ui/views:layout_provider",
+    "//ui/accessibility:ax_enums_mojo",
+    "//ui/base/metadata",
+    "//ui/color",
+    "//ui/views",
+  ]
+}
+
+source_set("lazy_loading_image_view") {
+  public = [ "lazy_loading_image_view.h" ]
+  sources = [ "lazy_loading_image_view.cc" ]
+  public_deps = [
+    "//base",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//ui/views",
+  ]
+  deps = [
+    "//base",
+    "//ui/base",
+    "//ui/base/metadata",
+    "//ui/views",
+  ]
+}
+
+source_set("password_favicon_loader") {
+  public = [ "password_favicon_loader.h" ]
+  sources = [ "password_favicon_loader.cc" ]
+  public_deps = [
+    "//base",
+    "//components/autofill/core/browser",
+  ]
+  deps = [
+    "//chrome/browser/favicon",
+    "//components/favicon/core",
+    "//components/favicon_base",
+    "//components/image_fetcher/core",
+    "//net/traffic_annotation",
+    "//ui/gfx",
+    "//url",
+  ]
+}
+
+source_set("popup_bnpl_footnote_view") {
+  public = [ "popup_bnpl_footnote_view.h" ]
+  sources = [ "popup_bnpl_footnote_view.cc" ]
+  public_deps = [
+    "//base",
+    "//ui/base/metadata",
+    "//ui/views",
+  ]
+  deps = [
+    ":popup",
+    "//chrome/browser/autofill",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui:chrome_pages",
+    "//chrome/browser/ui/autofill",
+    "//chrome/common:constants",
+    "//components/autofill/core/browser",
+    "//components/strings:components_strings",
+    "//components/user_education/views",
+    "//ui/base",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_notice_view") {
+  public = [ "popup_notice_view.h" ]
+  sources = [ "popup_notice_view.cc" ]
+  public_deps = [
+    "//base",
+    "//ui/base/metadata",
+    "//ui/views",
+  ]
+  deps = [
+    ":popup",
+    "//chrome/app/vector_icons",
+    "//chrome/browser/ui:chrome_pages",
+    "//chrome/browser/ui/autofill",
+    "//chrome/browser/ui/views:layout_provider",
+    "//components/autofill/core/browser",
+    "//components/strings:components_strings",
+    "//components/user_education/views",
+    "//components/vector_icons",
+    "//ui/base",
+    "//ui/color",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_search_bar_view") {
+  public = [ "popup_search_bar_view.h" ]
+  sources = [ "popup_search_bar_view.cc" ]
+  public_deps = [
+    "//base",
+    "//chrome/browser/ui/autofill",
+    "//ui/base",
+    "//ui/base/metadata",
+    "//ui/views",
+  ]
+  deps = [
+    "//chrome/browser/ui/views:layout_provider",
+    "//components/omnibox/browser:vector_icons",
+    "//components/strings:components_strings",
+    "//components/user_education/views",
+    "//components/vector_icons",
+    "//ui/base",
+    "//ui/color",
+    "//ui/events",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_cell_utils") {
+  public = [ "popup_cell_utils.h" ]
+  sources = [ "popup_cell_utils.cc" ]
+  public_deps = [
+    ":popup_row_content_view",
+    "//base",
+    "//components/autofill/core/browser",
+    "//ui/base",
+    "//ui/views",
+  ]
+  deps = [
+    ":lazy_loading_image_view",
+    ":password_favicon_loader",
+    ":popup",
+    "//chrome/app/resources:platform_locale_settings",
+    "//chrome/app/vector_icons",
+    "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/autofill/payments:payments_view_util",
+    "//chrome/browser/ui/webid",
+    "//components/omnibox/browser:vector_icons",
+    "//components/qr_code_generator:bitmap_generator",
+    "//components/strings:components_strings",
+    "//components/user_education/views",
+    "//components/vector_icons",
+    "//ui/accessibility:ax_base",
+    "//ui/color",
+    "//ui/gfx",
+    "//url",
+  ]
+}
+
+source_set("popup_row_with_button_view") {
+  public = [ "popup_row_with_button_view.h" ]
+  sources = [ "popup_row_with_button_view.cc" ]
+  public_deps = [
+    ":popup",
+    ":popup_row_content_view",
+    "//base",
+    "//ui/base/metadata",
+    "//ui/views",
+  ]
+  deps = [
+    ":popup_cell_utils",
+    "//chrome/browser/ui/autofill",
+    "//chrome/browser/ui/views:layout_provider",
+    "//components/autofill/core/browser",
+    "//components/strings:components_strings",
+    "//components/user_education/views",
+    "//components/vector_icons",
+    "//ui/accessibility:ax_base",
+    "//ui/accessibility:ax_enums_mojo",
+    "//ui/base",
+    "//ui/color",
+    "//ui/events",
+  ]
+}
+
+source_set("popup_at_memory_ai_disclosure_view") {
+  public = [ "popup_at_memory_ai_disclosure_view.h" ]
+  sources = [ "popup_at_memory_ai_disclosure_view.cc" ]
+  public_deps = [
+    ":popup",
+    ":popup_interactive_row_view",
+    "//base",
+    "//ui/base/metadata",
+  ]
+  deps = [
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui:chrome_pages",
+    "//chrome/browser/ui/autofill",
+    "//chrome/common",
+    "//components/strings:components_strings",
+    "//components/user_education/views",
+    "//content/public/browser",
+    "//ui/accessibility:ax_enums_mojo",
+    "//ui/base",
+    "//ui/color",
+    "//ui/views",
+  ]
+}
+
+source_set("browser_tests") {
+  testonly = true
+
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  sources = []
+  deps = []
+
+  if (enable_extensions) {
+    sources += [ "custom_cursor_suppressor_browsertest.cc" ]
+    deps += [
+      ":custom_cursor_suppressor",
+      "//chrome/browser/extensions:test_support",
+      "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/side_panel",
+      "//chrome/browser/ui/side_panel:side_panel_views_dependent",
+      "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/browser/ui/views/side_panel",
+      "//chrome/test:test_support",
+      "//chrome/test:test_support_ui",
+      "//content/public/browser",
+      "//content/test:browsertest_support",
+      "//content/test:test_support",
+      "//extensions:test_support",
+      "//net:test_support",
+      "//testing/gmock",
+      "//testing/gtest",
+      "//url",
+    ]
+  }
+}
+
+source_set("popup_badge_constants") {
+  public = [ "popup_badge_constants.h" ]
+  public_deps = [
+    "//ui/gfx/geometry",
+    "//ui/views",
+  ]
+}
+
+source_set("popup_row_factory_utils") {
+  public = [ "popup_row_factory_utils.h" ]
+  sources = [ "popup_row_factory_utils.cc" ]
+  public_deps = [
+    ":password_favicon_loader",
+    ":popup",
+    ":popup_badge_constants",
+    "//base",
+    "//chrome/browser/ui/autofill",
+    "//components/autofill/core/browser",
+    "//components/user_education/common",
+    "//ui/views",
+  ]
+  deps = [
+    ":lazy_loading_image_view",
+    ":popup_cell_utils",
+    ":popup_row_content_view",
+    ":popup_row_with_button_view",
+    "//chrome/app/vector_icons",
+    "//chrome/browser/ui/color:color_headers",
+    "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/autofill/payments:bnpl_issuer_linked_pill",
+    "//chrome/browser/user_education",
+    "//components/strings:components_strings",
+    "//components/user_education/views",
+    "//ui/base",
+    "//ui/gfx",
+  ]
+}
+
+source_set("popup_loading_view") {
+  public = [ "popup_loading_view.h" ]
+  sources = [ "popup_loading_view.cc" ]
+  public_deps = [
+    "//ui/base/metadata",
+    "//ui/views",
+  ]
+  deps = [
+    ":popup_row_content_view",
+    ":popup_row_factory_utils",
+    "//components/autofill/core/browser",
+    "//ui/accessibility:ax_enums_mojo",
+  ]
+}

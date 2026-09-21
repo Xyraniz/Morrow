@@ -1,0 +1,19 @@
+rootWebArea name='Alert Dialog Example'
+++genericContainer ignored
+++++genericContainer ignored
+++++++genericContainer
+++++++++alertDialog description='Are you sure you want to discard all of your notes?' name='Confirmation' descriptionFrom=relatedElement
+++++++++++heading name='Confirmation'
+++++++++++++staticText name='Confirmation'
+++++++++++++++inlineTextBox name='Confirmation'
+++++++++++genericContainer
+++++++++++++paragraph
+++++++++++++++staticText name='Are you sure you want to discard all of your notes?'
+++++++++++++++++inlineTextBox name='Are you sure you want to discard all of your notes?'
+++++++++++genericContainer
+++++++++++++button name='No'
+++++++++++++++staticText name='No'
+++++++++++++++++inlineTextBox name='No'
+++++++++++++button name='Yes'
+++++++++++++++staticText name='Yes'
+++++++++++++++++inlineTextBox name='Yes'

@@ -1,0 +1,11 @@
+Name: zerocopy
+URL: https://crates.io/crates/zerocopy
+Version: 0.8.57
+Revision: 0c90b11ac70875b7d9e6a0c31f98ef5ce223c6a1
+Update Mechanism: Manual (https://crbug.com/449898466)
+License: Apache-2.0
+License File: //third_party/rust/chromium_crates_io/vendor/zerocopy-v0_8/LICENSE-APACHE
+Shipped: no
+Security Critical: no
+
+Description: Zerocopy makes zero-cost memory manipulation effortless. We write "unsafe" so you don't have to.

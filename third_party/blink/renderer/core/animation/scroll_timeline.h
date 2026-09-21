@@ -1,0 +1,169 @@
+// Copyright 2017 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_SCROLL_TIMELINE_H_
+#define THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_SCROLL_TIMELINE_H_
+
+#include "base/gtest_prod_util.h"
+#include "base/time/time.h"
+#include "cc/animation/scroll_timeline.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_scroll_axis.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
+#include "third_party/blink/renderer/core/animation/animation_trigger.h"
+#include "third_party/blink/renderer/core/animation/scroll_snapshot_timeline.h"
+#include "third_party/blink/renderer/core/animation/timing.h"
+#include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/layout/geometry/axis.h"
+#include "third_party/blink/renderer/core/scroll/scroll_types.h"
+#include "third_party/blink/renderer/core/style/computed_style_constants.h"
+#include "third_party/blink/renderer/platform/text/writing_direction_mode.h"
+
+namespace blink {
+
+class Element;
+class LayoutObject;
+class PaintLayerScrollableArea;
+class ScrollTimelineOptions;
+class TreeScope;
+
+// Implements the ScrollTimeline concept from the Scroll-linked Animations spec.
+//
+// A ScrollTimeline is a special form of AnimationTimeline whose time values are
+// not determined by wall-clock time but instead the progress of scrolling in a
+// scroll container. The user is able to specify which scroll container to
+// track, the direction of scroll they care about, and various attributes to
+// control the conversion of scroll amount to time output.
+//
+// Spec: https://wicg.github.io/scroll-animations/#scroll-timelines
+class CORE_EXPORT ScrollTimeline : public ScrollSnapshotTimeline {
+  DEFINE_WRAPPERTYPEINFO();
+
+ public:
+  // Indicates the relation between the reference element and source of the
+  // scroll timeline.
+  enum class ReferenceType {
+    kSource,          // The reference element matches the source.
+    kNearestAncestor  // The source is the nearest scrollable ancestor to the
+                      // reference element.
+  };
+
+  static constexpr double kScrollTimelineMicrosecondsPerPixel =
+      cc::ScrollTimeline::kScrollTimelineMicrosecondsPerPixel;
+
+  static ScrollTimeline* Create(Document&,
+                                ScrollTimelineOptions*,
+                                ExceptionState&);
+
+  static ScrollTimeline* Create(Document* document,
+                                Element* source,
+                                ScrollAxis axis);
+
+  // Construct ScrollTimeline objects through one of the Create methods, which
+  // perform initial snapshots, as it can't be done during the constructor due
+  // to possibly depending on overloaded functions. When constructed for a CSS
+  // rule, a tree scope is required for name resolution. Imperative
+  // declarations have no CSS defining tree scope.
+  ScrollTimeline(Document*,
+                 ReferenceType reference_type,
+                 Element* reference,
+                 ScrollAxis axis,
+                 const TreeScope* tree_scope);
+
+  bool IsScrollTimeline() const override { return true; }
+
+  const TreeScope* GetTreeScope() const { return tree_scope_.Get(); }
+
+  // IDL API implementation.
+  Element* source() const;
+  const V8ScrollAxis axis() const { return V8ScrollAxis(GetAxis()); }
+
+  bool Matches(ReferenceType,
+               Element* reference_element,
+               ScrollAxis,
+               const TreeScope* tree_scope) const;
+
+  ScrollAxis GetAxis() const override;
+
+  std::optional<double> GetMaximumScrollPosition() const;
+
+  void AnimationAttached(Animation*) override;
+  void AnimationDetached(Animation*) override;
+
+  std::optional<double> GetCurrentScrollPosition() const;
+
+  static PhysicalAxis ResolvePhysicalAxis(ScrollAxis, WritingDirectionMode);
+
+  Node* ComputeResolvedSource() const;
+
+  void Trace(Visitor*) const override;
+
+  TimelineState ComputeTimelineState() const override;
+
+  // ScrollTimelines may be created with reference to an element,
+  // which, in combination with ReferenceType, defines the source [1]
+  // (for scroll timelines) or subject [2] (for view timelines).
+  //
+  // For timelines created from CSS, the reference element is always present,
+  // and it is always the element that produced the timeline.
+  //
+  // [1] https://drafts.csswg.org/scroll-animations-1/#dom-scrolltimeline-source
+  // [2] https://drafts.csswg.org/scroll-animations-1/#dom-viewtimeline-subject
+  Element* GetReferenceElement() const { return reference_element_.Get(); }
+
+  // Returns an element eligible to be web exposed. This may be the element
+  // itself, the ultimate owning element in the case of a pseudo-element, or
+  // shadow host in the case of UA shadow content.
+  static Element* Sanitize(Element* element);
+
+ protected:
+  // Scroll offsets corresponding to 0% and 100% progress. By default, these
+  // correspond to the scroll range of the container.
+  virtual void CalculateOffsets(PaintLayerScrollableArea* scrollable_area,
+                                PhysicalAxis physical_orientation,
+                                TimelineState* state) const;
+
+  // Determines the source for the scroll timeline. It may be the reference
+  // element or its nearest scrollable ancestor for the timeline's axis,
+  // depending on |reference_type_|.
+  Element* ComputeSource() const;
+  // This version does not force a style update and is therefore safe to call
+  // during lifecycle update.
+  Element* ComputeSourceNoLayout() const;
+
+  void AddTrigger(TimelineTrigger* trigger) override;
+  void RemoveTrigger(TimelineTrigger* trigger) override;
+
+ private:
+  FRIEND_TEST_ALL_PREFIXES(ScrollTimelineTest, MultipleScrollOffsetsClamping);
+  FRIEND_TEST_ALL_PREFIXES(ScrollTimelineTest, ResolveScrollOffsets);
+
+  // Finds the layout object the timeline uses to determine source. It may be
+  // the reference element or its nearest scrollable ancestor for the given
+  // scrollable axes, depending on |reference_type_|.
+  const LayoutObject* ComputeLayoutObjectNoLayout(
+      PhysicalAxes scrollable_axes) const;
+  std::optional<WritingDirectionMode> ComputeWritingDirectionNoLayout() const;
+
+  // The retaining element is the element responsible for keeping
+  // the timeline alive while animations are attached.
+  //
+  // See Node::[Un]RegisterScrollTimeline.
+  Element* RetainingElement() const;
+
+  ReferenceType reference_type_;
+  Member<Element> reference_element_;
+  ScrollAxis axis_;
+  Member<const TreeScope> tree_scope_;
+};
+
+template <>
+struct DowncastTraits<ScrollTimeline> {
+  static bool AllowFrom(const AnimationTimeline& value) {
+    return value.IsScrollTimeline();
+  }
+};
+
+}  // namespace blink
+
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_SCROLL_TIMELINE_H_

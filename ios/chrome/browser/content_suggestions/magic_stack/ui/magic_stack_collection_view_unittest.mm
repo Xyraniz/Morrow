@@ -1,0 +1,135 @@
+// Copyright 2024 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_collection_view.h"
+
+#import "components/sync_preferences/testing_pref_service_syncable.h"
+#import "ios/chrome/browser/content_suggestions/magic_stack/public/magic_stack_utils.h"
+#import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_collection_view_audience.h"
+#import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_module_container_delegate.h"
+#import "ios/chrome/browser/content_suggestions/price_tracking_promo/ui/price_tracking_promo_config.h"
+#import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
+#import "ios/chrome/browser/content_suggestions/shortcuts/ui/shortcuts_config.h"
+#import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
+#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
+#import "ios/chrome/test/testing_application_context.h"
+#import "ios/web/public/test/web_task_environment.h"
+#import "testing/platform_test.h"
+#import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
+
+@interface MagicStackCollectionViewController (Testing)
+
+- (void)logNavigationToPage:(NSUInteger)page;
+
+@end
+
+// Tests the behavior of MagicStackCollectionViewController.
+class MagicStackCollectionViewControllerTest : public PlatformTest {
+ public:
+  void SetUp() override {
+    PlatformTest::SetUp();
+
+    // Create and initialize PrefService
+    RegisterProfilePrefs(pref_service_.registry());
+
+    _window = [[UIWindow alloc]
+        initWithWindowScene:chrome_test_util::GetAnyWindowScene()];
+    UIView.animationsEnabled = NO;
+    view_controller_ = [[MagicStackCollectionViewController alloc]
+        initWithLayoutType:MagicStackLayoutType::kClassic];
+    audience_ = OCMStrictProtocolMock(
+        @protocol(MagicStackCollectionViewControllerAudience));
+    view_controller_.audience = audience_;
+    [view_controller_ loadViewIfNeeded];
+    [view_controller_ viewDidLoad];
+    [_window addSubview:[view_controller_ view]];
+    AddSameConstraints(_window, [view_controller_ view]);
+    [[view_controller_ view] layoutIfNeeded];
+  }
+
+  void TearDown() override { PlatformTest::TearDown(); }
+
+ protected:
+  web::WebTaskEnvironment task_environment_;
+  sync_preferences::TestingPrefServiceSyncable pref_service_;
+  UIWindow* _window;
+  UIView* _superview;
+  MagicStackCollectionViewController* view_controller_;
+  id<MagicStackCollectionViewControllerAudience,
+     MagicStackModuleContainerDelegate>
+      audience_;
+};
+
+// Tests that bringing an ephemeral card into view triggers the expected
+// audience signal.
+TEST_F(MagicStackCollectionViewControllerTest, TestEphemeralCardAudienceCall) {
+  OCMExpect([audience_ logTopModuleImpressionForType:
+                           ContentSuggestionsModuleType::kPriceTrackingPromo]);
+  OCMExpect([audience_ logEphemeralCardVisibility:ContentSuggestionsModuleType::
+                                                      kPriceTrackingPromo]);
+  // Test that populating the Magic Stack triggers audience call
+  [view_controller_ populateItems:@[
+    [[PriceTrackingPromoConfig alloc] init], [[ShortcutsConfig alloc] init]
+  ]];
+  EXPECT_OCMOCK_VERIFY((id)audience_);
+
+  // Test that the audience call is not triggered more than once
+  [view_controller_ logNavigationToPage:0];
+  EXPECT_OCMOCK_VERIFY((id)audience_);
+}
+
+// Tests that swiping to an ephemeral card when it is not the top card triggers
+// the expected audience signal.
+TEST_F(MagicStackCollectionViewControllerTest,
+       TestSwipeToEphemeralCardAudienceCall) {
+  OCMExpect([audience_
+      logTopModuleImpressionForType:ContentSuggestionsModuleType::kShortcuts]);
+  // Test that populating the Magic Stack does not trigger audience call since
+  // it is not top card.
+  [view_controller_ populateItems:@[
+    [[ShortcutsConfig alloc] init], [[PriceTrackingPromoConfig alloc] init]
+  ]];
+  EXPECT_OCMOCK_VERIFY((id)audience_);
+
+  OCMExpect([audience_ logEphemeralCardVisibility:ContentSuggestionsModuleType::
+                                                      kPriceTrackingPromo]);
+  // Test that scrolling to card triggers audience signal.
+  [view_controller_ logNavigationToPage:1];
+  EXPECT_OCMOCK_VERIFY((id)audience_);
+}
+
+// Tests that MagicStackTargetPage computes the correct page with clamping and
+// velocity thresholds.
+TEST_F(MagicStackCollectionViewControllerTest, TestTargetPageCalculation) {
+  const CGFloat kPageWidth = 300.0;
+  const NSUInteger kTotalPages = 3;
+
+  // Zero pages.
+  EXPECT_EQ(0u, MagicStackTargetPage(0, 0, kPageWidth, 0));
+
+  // Single page.
+  EXPECT_EQ(0u, MagicStackTargetPage(0, 0, kPageWidth, 1));
+  EXPECT_EQ(0u, MagicStackTargetPage(500, 1.0, kPageWidth, 1));
+
+  // Stationary near page 0.
+  EXPECT_EQ(0u, MagicStackTargetPage(100, 0, kPageWidth, kTotalPages));
+  // Stationary near page 1 (150 is halfway, 151 rounds to page 1).
+  EXPECT_EQ(1u, MagicStackTargetPage(160, 0, kPageWidth, kTotalPages));
+
+  // Positive flick from page 0 moves to page 1 even with small offset.
+  EXPECT_EQ(1u, MagicStackTargetPage(50, 0.5, kPageWidth, kTotalPages));
+
+  // Negative flick from page 1 moves back to page 0.
+  EXPECT_EQ(0u, MagicStackTargetPage(250, -0.5, kPageWidth, kTotalPages));
+
+  // Clamping at boundary: flicking beyond last page stays on last page (page
+  // 2).
+  EXPECT_EQ(2u, MagicStackTargetPage(600, 1.0, kPageWidth, kTotalPages));
+
+  // Clamping at start: negative flick at page 0 stays on page 0.
+  EXPECT_EQ(0u, MagicStackTargetPage(-50, -1.0, kPageWidth, kTotalPages));
+}

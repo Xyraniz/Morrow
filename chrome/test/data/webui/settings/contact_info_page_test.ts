@@ -1,0 +1,3168 @@
+// Copyright 2018 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// clang-format off
+import 'chrome://settings/settings.js';
+
+import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import type {
+  CrInputElement,
+  CrTextareaElement,
+  SettingsContactInfoPageElement,
+  SettingsGmailOtpDisclaimerDialogElement,
+  SettingsSimpleConfirmationDialogElement,
+} from 'chrome://settings/lazy_load.js';
+import {
+  AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF,
+  AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC,
+  AutofillAddressOptInChange,
+  AutofillManagerImpl,
+  CountryDetailManagerProxyImpl,
+} from 'chrome://settings/lazy_load.js';
+import {
+  assertDeepEquals,
+  assertEquals,
+  assertFalse,
+  assertGT,
+  assertTrue,
+} from 'chrome://webui-test/chai_assert.js';
+import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
+import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
+import type {SettingsToggleButtonElement} from 'chrome://settings/settings.js';
+import {loadTimeData, OpenWindowProxyImpl} from 'chrome://settings/settings.js';
+import {eventToPromise, whenAttributeIs, isVisible} from 'chrome://webui-test/test_util.js';
+import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
+import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
+
+import {AutofillManagerExpectations, createAddressEntry, createEmptyAddressEntry, STUB_USER_ACCOUNT_INFO, TestAutofillManager} from './autofill_fake_data.js';
+import {createContactInfoPage, initiateRemoving, initiateEditing, createAddressDialog, createRemoveAddressDialog, expectEvent, openAddressDialog, getAddressFieldValue} from './contact_info_page_test_utils.js';
+import {TestCountryDetailManagerProxy} from './test_country_detail_manager_proxy.js';
+// clang-format on
+
+const FieldType = chrome.autofillPrivate.FieldType;
+
+const ADDRESS_COMPONENTS_US = {
+  components: [
+    {
+      row: [
+        {
+          field: FieldType.NAME_FULL,
+          fieldName: 'Name',
+          isLongField: true,
+          isRequired: false,
+        },
+      ],
+    },
+    {
+      row: [
+        {
+          field: FieldType.ADDRESS_HOME_CITY,
+          fieldName: 'City',
+          isLongField: false,
+          isRequired: true,
+        },
+        {
+          field: FieldType.ADDRESS_HOME_STATE,
+          fieldName: 'State',
+          isLongField: false,
+          isRequired: true,
+        },
+        {
+          field: FieldType.ADDRESS_HOME_ZIP,
+          fieldName: 'ZIP code',
+          isLongField: false,
+          isRequired: true,
+        },
+      ],
+    },
+  ],
+  languageCode: 'en',
+};
+
+const ADDRESS_COMPONENTS_GB = {
+  components: [
+    {
+      row: [
+        {
+          field: FieldType.NAME_FULL,
+          fieldName: 'Name',
+          isLongField: true,
+          isRequired: false,
+        },
+      ],
+    },
+    {
+      row: [
+        {
+          field: FieldType.ADDRESS_HOME_CITY,
+          fieldName: 'Post town',
+          isLongField: false,
+          isRequired: true,
+        },
+      ],
+    },
+    {
+      row: [
+        {
+          field: FieldType.ADDRESS_HOME_ZIP,
+          fieldName: 'Postal code',
+          isLongField: false,
+          isRequired: true,
+        },
+      ],
+    },
+    {
+      row: [
+        {
+          field: FieldType.ADDRESS_HOME_STATE,
+          fieldName: 'County',
+          isLongField: false,
+          isRequired: true,
+        },
+      ],
+    },
+  ],
+  languageCode: 'en',
+};
+
+const ADDRESS_COMPONENTS_IL = {
+  components: [
+    {
+      row: [
+        {
+          field: FieldType.NAME_FULL,
+          fieldName: 'Name',
+          isLongField: true,
+          isRequired: false,
+        },
+      ],
+    },
+    {
+      row: [
+        {
+          field: FieldType.ADDRESS_HOME_CITY,
+          fieldName: 'City',
+          isLongField: false,
+          isRequired: true,
+        },
+        {
+          field: FieldType.ADDRESS_HOME_ZIP,
+          fieldName: 'Postal code',
+          isLongField: false,
+          isRequired: true,
+        },
+      ],
+    },
+  ],
+  languageCode: 'iw',
+};
+
+const ConsentState = chrome.autofillPrivate.UserDataProcessingConsentState;
+type ConsentStates = chrome.autofillPrivate.UserDataProcessingConsentStates;
+
+suite('ContactInfoPageUiTest', function() {
+  setup(function() {
+    loadTimeData.overrideValues({
+      emailVerificationProtocolEnabled: false,
+      autofillGmailOtpFillingEnabled: false,
+    });
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+  });
+
+  test('AutofillExtensionIndicator', function() {
+    // Initializing with fake prefs
+    const page = document.createElement('settings-contact-info-page');
+    page.prefs = {
+      autofill: {
+        profile_enabled: {},
+        types_blocked: {value: []},
+        email_verification_state: {
+          type: chrome.settingsPrivate.PrefType.DICTIONARY,
+          value: {},
+        },
+      },
+    };
+    document.body.appendChild(page);
+
+    assertFalse(
+        !!page.shadowRoot!.querySelector('#autofillExtensionIndicator'));
+    page.set('prefs.autofill.profile_enabled.extensionId', 'test-id');
+    flush();
+
+    assertTrue(
+        !!page.shadowRoot!.querySelector('#autofillExtensionIndicator'));
+  });
+
+  test('AutofillTypesBlockedPolicy', async function() {
+    loadTimeData.overrideValues({
+      AutofillSettingsEnterprisePolicyEnabled: true,
+    });
+    const page = await createContactInfoPage([], {
+      profile_enabled: {value: true},
+      types_blocked: {
+        value: [{url_pattern: '*', blocked_types: ['contact_info']}],
+      },
+    });
+    flush();
+
+    const toggle = page.$.autofillProfileToggle;
+    assertTrue(toggle.controlDisabled());
+    assertFalse(toggle.checked);
+    assertTrue(page.$.addAddress.disabled);
+
+    // Dynamically clearing the policy blocks triggers the .* observer.
+    page.set('prefs.autofill.types_blocked.value', []);
+    flush();
+    assertFalse(toggle.controlDisabled());
+    assertTrue(toggle.checked);
+    assertFalse(page.$.addAddress.disabled);
+
+    // Dynamically re-applying policy blocks updates toggle back to disabled.
+    page.set('prefs.autofill.types_blocked.value', [
+      {url_pattern: '*', blocked_types: ['contact_info']},
+    ]);
+    flush();
+    assertTrue(toggle.controlDisabled());
+    assertFalse(toggle.checked);
+    assertTrue(page.$.addAddress.disabled);
+  });
+
+  test('AutofillTypesBlockedAllPolicy', async function() {
+    loadTimeData.overrideValues({
+      AutofillSettingsEnterprisePolicyEnabled: true,
+    });
+    const page = await createContactInfoPage([], {
+      profile_enabled: {value: true},
+      types_blocked: {
+        value: [{url_pattern: '*', blocked_types: ['all']}],
+      },
+    });
+    flush();
+
+    const toggle = page.$.autofillProfileToggle;
+    assertTrue(toggle.controlDisabled());
+    assertFalse(toggle.checked);
+    assertTrue(page.$.addAddress.disabled);
+  });
+
+  test('AutofillTypesBlockedPolicyNegativeTest', async function() {
+    loadTimeData.overrideValues({
+      AutofillSettingsEnterprisePolicyEnabled: true,
+    });
+    const page = await createContactInfoPage([], {
+      profile_enabled: {value: true},
+      types_blocked: {
+        value: [{url_pattern: '*', blocked_types: ['payments']}],
+      },
+    });
+    flush();
+
+    const toggle = page.$.autofillProfileToggle;
+    assertFalse(toggle.controlDisabled());
+    assertTrue(toggle.checked);
+    assertFalse(page.$.addAddress.disabled);
+  });
+
+  test('AutofillTypesBlockedIgnoredWhenFlagDisabled', async function() {
+    loadTimeData.overrideValues({
+      AutofillSettingsEnterprisePolicyEnabled: false,
+    });
+    const page = await createContactInfoPage([], {
+      profile_enabled: {value: true},
+      types_blocked: {
+        value: [{url_pattern: '*', blocked_types: ['contact_info']}],
+      },
+    });
+    flush();
+
+    const toggle = page.$.autofillProfileToggle;
+    assertFalse(toggle.controlDisabled());
+    assertTrue(toggle.checked);
+    assertFalse(page.$.addAddress.disabled);
+  });
+
+  test('verifyAddAddressDisabledWhenUserTogglesOff', async function() {
+    const page = await createContactInfoPage([], {
+      profile_enabled: {value: true},
+    });
+    flush();
+
+    const toggle = page.$.autofillProfileToggle;
+    assertFalse(page.$.addAddress.disabled);
+
+    // User toggles off addresses.
+    toggle.click();
+    flush();
+
+    assertFalse(toggle.checked);
+    assertTrue(page.$.addAddress.disabled);
+  });
+
+  test('EmailVerificationToggle', async function() {
+    loadTimeData.overrideValues({emailVerificationProtocolEnabled: true});
+
+    const page = await createContactInfoPage([], {
+      profile_enabled: {value: true},
+      email_verification_enabled: {value: true},
+    });
+    const toggle =
+        page.shadowRoot!.querySelector('#autofillEmailVerificationToggle');
+    assertTrue(!!toggle);
+
+    const noEmailsLabel = page.shadowRoot!.querySelector('#noEmailsLabel');
+    assertTrue(!!noEmailsLabel);
+    assertFalse((noEmailsLabel as HTMLElement).hidden);
+  });
+
+  test('EmailVerificationList', async function() {
+    loadTimeData.overrideValues({emailVerificationProtocolEnabled: true});
+
+    const emailState = {
+      'test1@example.com': {allowed: true, issuer_site: 'https://google.com'},
+      'test2@example.com': {allowed: false, issuer_site: 'https://yahoo.com'},
+    };
+
+    const page = await createContactInfoPage([], {
+      profile_enabled: {value: true},
+      email_verification_enabled: {value: true},
+      email_verification_state: {
+        type: chrome.settingsPrivate.PrefType.DICTIONARY,
+        value: emailState,
+      },
+    });
+
+    flush();
+
+    const menuButtons =
+        page.shadowRoot!.querySelectorAll<HTMLElement>('.email-menu');
+    assertEquals(2, menuButtons.length);
+
+    const button0 = menuButtons[0]!;
+    const button1 = menuButtons[1]!;
+
+    const item0 = button0.parentElement;
+    const item1 = button1.parentElement;
+    assertTrue(!!item0);
+    assertTrue(!!item1);
+
+    const start0 = item0.querySelector('.start');
+    assertTrue(!!start0);
+    assertEquals('test1@example.com', start0.textContent.trim());
+    const favicon0 = item0.querySelector('site-favicon');
+    assertTrue(!!favicon0);
+    assertEquals('https://google.com', favicon0.url);
+
+    const start1 = item1.querySelector('.start');
+    assertTrue(!!start1);
+    assertEquals('test2@example.com', start1.textContent.trim());
+    const favicon1 = item1.querySelector('site-favicon');
+    assertTrue(!!favicon1);
+    assertEquals('https://yahoo.com', favicon1.url);
+
+    // Click menu on first item.
+    button0.click();
+    await flushTasks();
+
+    assertTrue(page.$.emailSharedMenu.open);
+
+    // Click remove.
+    page.$.menuRemoveEmail.click();
+    await flushTasks();
+
+    const dialog = page.shadowRoot!
+                       .querySelector<SettingsSimpleConfirmationDialogElement>(
+                           '#emailRemoveConfirmationDialog');
+    assertTrue(!!dialog);
+    dialog.$.confirm.click();
+
+    await eventToPromise('close', dialog.$.dialog);
+    await flushTasks();
+
+    // Verify pref was updated.
+    const updatedPrefs = page
+                             .getPref<Record<string, unknown>>(
+                                 'autofill.email_verification_state')
+                             .value;
+    assertFalse('test1@example.com' in updatedPrefs);
+    assertTrue('test2@example.com' in updatedPrefs);
+
+    // Verify UI updated.
+    const newMenuButtons = page.shadowRoot!.querySelectorAll('.email-menu');
+    assertEquals(1, newMenuButtons.length);
+    const newButton0 = newMenuButtons[0]!;
+    const newItem0 = newButton0.parentElement!;
+    assertTrue(!!newItem0);
+    const newStart0 = newItem0.querySelector('.start');
+    assertTrue(!!newStart0);
+    assertEquals('test2@example.com', newStart0.textContent.trim());
+  });
+
+  test('verifyAddressDeleteRecordTypeNotice', async () => {
+    const address = createAddressEntry();
+    const accountAddress = createAddressEntry();
+    accountAddress.metadata!.recordType =
+        chrome.autofillPrivate.AddressRecordType.ACCOUNT;
+
+    const autofillManager = new TestAutofillManager();
+    autofillManager.data.addresses = [address, accountAddress];
+    autofillManager.data.accountInfo = {
+      ...STUB_USER_ACCOUNT_INFO,
+      isSyncEnabledForAutofillProfiles: true,
+    };
+    AutofillManagerImpl.setInstance(autofillManager);
+
+    const page = document.createElement('settings-contact-info-page');
+    document.body.appendChild(page);
+    await autofillManager.whenCalled('getAddressList');
+
+    await flushTasks();
+
+    {
+      const dialog = await initiateRemoving(page, 0);
+      const expectedMessage =
+          loadTimeData.getString('removeSyncAddressConfirmationDescription');
+      assertEquals(
+          dialog.$.description.textContent.trim(), expectedMessage,
+          'Sync-on message should be visible');
+      dialog.$.dialog.close();
+      // Make sure closing clean-ups are finished.
+      await eventToPromise('close', dialog.$.dialog);
+    }
+
+    await flushTasks();
+
+    const changeListener =
+        autofillManager.lastCallback.setPersonalDataManagerListener;
+    assertTrue(
+        !!changeListener,
+        'PersonalDataChangedListener should be set in the page element');
+
+    // Imitate disabling sync.
+    changeListener(autofillManager.data.addresses, [], [], [], {
+      ...STUB_USER_ACCOUNT_INFO,
+    });
+
+    {
+      const dialog = await initiateRemoving(page, 0);
+      const expectedMessage =
+          loadTimeData.getString('removeLocalAddressConfirmationDescription');
+      assertEquals(
+          dialog.$.description.textContent.trim(), expectedMessage,
+          'Sync-off message should be visible');
+      dialog.$.dialog.close();
+      // Make sure closing clean-ups are finished.
+      await eventToPromise('close', dialog.$.dialog);
+    }
+
+    await flushTasks();
+
+    // Imitate disabling sync.
+    changeListener(autofillManager.data.addresses, [], [], [], undefined);
+
+    {
+      const dialog = await initiateRemoving(page, 0);
+      const expectedMessage =
+          loadTimeData.getString('removeLocalAddressConfirmationDescription');
+      assertEquals(
+          dialog.$.description.textContent.trim(), expectedMessage,
+          'Sync-off message should be visible when account info is missing');
+      dialog.$.dialog.close();
+      // Make sure closing clean-ups are finished.
+      await eventToPromise('close', dialog.$.dialog);
+    }
+
+    await flushTasks();
+
+    changeListener(autofillManager.data.addresses, [], [], [], {
+      ...STUB_USER_ACCOUNT_INFO,
+      isSyncEnabledForAutofillProfiles: true,
+    });
+
+    {
+      const dialog = await initiateRemoving(page, 1);
+      const expectedMessage = loadTimeData.getStringF(
+          'deleteAccountAddressRecordTypeNotice', STUB_USER_ACCOUNT_INFO.email);
+      assertEquals(
+          dialog.$.description.textContent.trim(), expectedMessage,
+          'Account address message should be visible');
+      dialog.$.dialog.close();
+      // Make sure closing clean-ups are finished.
+      await eventToPromise('close', dialog.$.dialog);
+    }
+  });
+
+  test('verifyAddressDeleteHomeAddressNotice', async () => {
+    const homeAddress = createAddressEntry();
+    homeAddress.metadata!.recordType =
+        chrome.autofillPrivate.AddressRecordType.ACCOUNT_HOME;
+
+    const autofillManager = new TestAutofillManager();
+    autofillManager.data.addresses = [homeAddress];
+    autofillManager.data.accountInfo = {
+      ...STUB_USER_ACCOUNT_INFO,
+      isSyncEnabledForAutofillProfiles: true,
+    };
+    AutofillManagerImpl.setInstance(autofillManager);
+
+    const page = document.createElement('settings-contact-info-page');
+    document.body.appendChild(page);
+    await autofillManager.whenCalled('getAddressList');
+    await flushTasks();
+
+    {
+      const dialog = await initiateRemoving(page, 0);
+      const homeUrl = loadTimeData.getString('googleAccountHomeAddressUrl')
+                          .replace(/&/g, '&amp;');
+      const expectedMessage = loadTimeData.getStringF(
+          'deleteHomeAddressNotice', homeUrl, STUB_USER_ACCOUNT_INFO.email);
+      assertEquals(
+          dialog.$.description.innerHTML, expectedMessage,
+          'Home address delete confirmation view description is incorrect.');
+      dialog.$.dialog.close();
+      // Make sure closing clean-ups are finished.
+      await eventToPromise('close', dialog.$.dialog);
+    }
+  });
+
+  test('verifyAddressDeleteWorkAddressNotice', async () => {
+    const workAddress = createAddressEntry();
+    workAddress.metadata!.recordType =
+        chrome.autofillPrivate.AddressRecordType.ACCOUNT_WORK;
+
+    const autofillManager = new TestAutofillManager();
+    autofillManager.data.addresses = [workAddress];
+    autofillManager.data.accountInfo = {
+      ...STUB_USER_ACCOUNT_INFO,
+      isSyncEnabledForAutofillProfiles: true,
+    };
+    AutofillManagerImpl.setInstance(autofillManager);
+
+    const page = document.createElement('settings-contact-info-page');
+    document.body.appendChild(page);
+    await autofillManager.whenCalled('getAddressList');
+    await flushTasks();
+
+    {
+      const dialog = await initiateRemoving(page, 0);
+      const workUrl = loadTimeData.getString('googleAccountWorkAddressUrl')
+                          .replace(/&/g, '&amp;');
+      const expectedMessage = loadTimeData.getStringF(
+          'deleteWorkAddressNotice', workUrl, STUB_USER_ACCOUNT_INFO.email);
+      assertEquals(
+          dialog.$.description.innerHTML, expectedMessage,
+          'Work address delete confirmation view description is incorrect.');
+      dialog.$.dialog.close();
+      // Make sure closing clean-ups are finished.
+      await eventToPromise('close', dialog.$.dialog);
+    }
+  });
+
+  test('verifyAddressDeleteNameEmailAddressNotice', async () => {
+    const nameEmailAddress = createAddressEntry();
+    nameEmailAddress.metadata!.recordType =
+        chrome.autofillPrivate.AddressRecordType.ACCOUNT_NAME_EMAIL;
+
+    const autofillManager = new TestAutofillManager();
+    autofillManager.data.addresses = [nameEmailAddress];
+    autofillManager.data.accountInfo = {
+      ...STUB_USER_ACCOUNT_INFO,
+      isSyncEnabledForAutofillProfiles: true,
+    };
+    AutofillManagerImpl.setInstance(autofillManager);
+
+    const page = document.createElement('settings-contact-info-page');
+    document.body.appendChild(page);
+    await autofillManager.whenCalled('getAddressList');
+    await flushTasks();
+
+    {
+      const dialog = await initiateRemoving(page, 0);
+      const nameEmailUrl =
+          loadTimeData.getString('googleAccountNameEmailAddressEditUrl')
+              .replace(/&/g, '&amp;');
+      const expectedDescription = loadTimeData.getStringF(
+          'deleteNameEmailAddressNotice', nameEmailUrl,
+          STUB_USER_ACCOUNT_INFO.email);
+      assertEquals(
+          dialog.$.description.innerHTML, expectedDescription,
+          'Name email delete confirmation view description is incorrect.');
+
+      const title = dialog.shadowRoot!.querySelector<HTMLElement>('#title');
+      assertTrue(!!title);
+      assertEquals(
+          title.innerHTML,
+          loadTimeData.getString('removeNameEmailAddressConfirmationTitle'),
+          'Name email delete confirmation view title is incorrect.');
+
+      const removeButton =
+          dialog.shadowRoot!.querySelector<HTMLElement>('#remove');
+      assertTrue(!!removeButton);
+      assertEquals(
+          removeButton.innerText,
+          loadTimeData.getString('removeAddressFromChrome'),
+          'Name email delete confirmation remove button label is incorrect.');
+      dialog.$.dialog.close();
+      // Make sure closing clean-ups are finished.
+      await eventToPromise('close', dialog.$.dialog);
+    }
+  });
+
+  test('verifyAddressEditRecordTypeNotice', async () => {
+    const email = 'stub-user@example.com';
+    const address = createAddressEntry();
+    const accountAddress = createAddressEntry();
+    accountAddress.metadata!.recordType =
+        chrome.autofillPrivate.AddressRecordType.ACCOUNT;
+    const page = await createContactInfoPage([address, accountAddress], {}, {
+      ...STUB_USER_ACCOUNT_INFO,
+      email,
+    });
+
+    {
+      const dialog = await initiateEditing(page, 0);
+      assertFalse(
+          isVisible(dialog.$.accountRecordTypeNotice),
+          'account notice should be invisible for non-account address');
+      dialog.$.dialog.close();
+      // Make sure closing clean-ups are finished.
+      await eventToPromise('close', dialog.$.dialog);
+    }
+
+    await flushTasks();
+
+    {
+      const dialog = await initiateEditing(page, 1);
+      assertTrue(
+          isVisible(dialog.$.accountRecordTypeNotice),
+          'account notice should be visible for account address');
+
+      assertEquals(
+          dialog.$.accountRecordTypeNotice.innerText,
+          page.i18n('editAccountAddressRecordTypeNotice', email));
+
+      dialog.$.dialog.close();
+      // Make sure closing clean-ups are finished.
+      await eventToPromise('close', dialog.$.dialog);
+    }
+  });
+
+  interface GmailOtpFillingOptions {
+    profileEnabled?: boolean;
+    gmailOtpFilling?: boolean;
+    accountInfo?: chrome.autofillPrivate.AccountInfo|null;
+    autofillManager?: TestAutofillManager;
+    minSpinnerDurationMs?: number;
+  }
+
+  interface ContactInfoPageElementWithToggle {
+    page: SettingsContactInfoPageElement;
+    toggle: SettingsToggleButtonElement;
+    autofillManager: TestAutofillManager;
+  }
+
+  async function createContactInfoPageForGmailOtpFilling({
+    profileEnabled = true,
+    gmailOtpFilling = false,
+    accountInfo,
+    autofillManager = new TestAutofillManager(),
+    minSpinnerDurationMs = 0,
+  }: GmailOtpFillingOptions = {}): Promise<ContactInfoPageElementWithToggle> {
+    const manager = autofillManager;
+    if (accountInfo !== undefined) {
+      manager.data.accountInfo = accountInfo ?? undefined;
+    }
+    AutofillManagerImpl.setInstance(manager);
+
+    const page = document.createElement('settings-contact-info-page');
+    page.minOtpConsentSpinnerDurationMs = minSpinnerDurationMs;
+    page.prefs = {
+      autofill: {
+        profile_enabled: {
+          type: chrome.settingsPrivate.PrefType.BOOLEAN,
+          value: profileEnabled,
+        },
+        types_blocked: {
+          type: chrome.settingsPrivate.PrefType.LIST,
+          value: [],
+        },
+        email_verification_state: {
+          type: chrome.settingsPrivate.PrefType.DICTIONARY,
+          value: {},
+        },
+        gmail_otp_filling: {
+          enabled: {
+            type: chrome.settingsPrivate.PrefType.BOOLEAN,
+            value: gmailOtpFilling,
+          },
+        },
+      },
+    };
+    document.body.appendChild(page);
+    await manager.whenCalled('getAddressList');
+    if (gmailOtpFilling && accountInfo !== null &&
+        loadTimeData.getBoolean('autofillGmailOtpFillingEnabled')) {
+      await manager.whenCalled('fetchUserDataProcessingConsent');
+    }
+    await flushTasks();
+    const toggle = page.$.autofillOtpFillingToggle;
+    return {page, toggle, autofillManager: manager};
+  }
+
+  test('OtpFillingToggleShown', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const {toggle} = await createContactInfoPageForGmailOtpFilling();
+
+    assertTrue(isVisible(toggle));
+    assertTrue(toggle.classList.contains('hr'));
+  });
+
+  test('OtpFillingToggleHiddenWhenSignedOut', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const {toggle} =
+        await createContactInfoPageForGmailOtpFilling({accountInfo: null});
+
+    assertFalse(isVisible(toggle));
+  });
+
+  test('OtpFillingToggleHiddenWhenFlagDisabled', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: false});
+    const {toggle} = await createContactInfoPageForGmailOtpFilling();
+
+    assertFalse(isVisible(toggle));
+  });
+
+  test('OtpFillingToggleInitiallyOffWhenPrefIsOff', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const {page, toggle, autofillManager} =
+        await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: false,
+        });
+
+    assertTrue(isVisible(toggle));
+    assertFalse(toggle.checked);
+    assertFalse(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertFalse(
+        isVisible(page.$.otpFillingLoadingSpinner),
+        'spinner should not be shown');
+    assertEquals(
+        0, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+        'fetchUserDataProcessingConsent should not be called when pref is off');
+  });
+
+  test('OtpFillingToggleExternallyEnabledUpdatesToggle', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    });
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+    });
+
+    assertFalse(toggle.checked);
+    assertEquals(
+        0, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+        'fetchUserDataProcessingConsent should not be called initially when ' +
+            'pref is off');
+
+    page.set(`prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, true);
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    assertTrue(toggle.checked);
+    assertEquals(
+        1, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+        'fetchUserDataProcessingConsent should be called once on external ' +
+            'pref enable');
+
+    // Subsequent external pref update with same enabled value should not
+    // refetch.
+    page.set(`prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, true);
+    await flushTasks();
+    assertEquals(
+        1, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+        'fetchUserDataProcessingConsent should not be called again when ' +
+            'already checked');
+  });
+
+  test(
+      'OtpFillingToggleExternallyEnabledStaysOffWhenConsentDisabled',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        autofillManager.setUserDataProcessingConsent({
+          commsApps: ConsentState.DISABLED,
+          googleApps: ConsentState.DISABLED,
+        });
+        const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: false,
+          autofillManager,
+        });
+
+        assertFalse(toggle.checked);
+        assertEquals(
+            0, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        page.set(
+            `prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, true);
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+        await flushTasks();
+
+        assertFalse(toggle.checked);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+      });
+
+  test(
+      'OtpFillingToggleExternallyEnabledFallsBackToEnabledOnFetchError',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        autofillManager.fetchUserDataProcessingConsent = () => {
+          autofillManager.methodCalled('fetchUserDataProcessingConsent');
+          return Promise.reject(new Error('Network error'));
+        };
+
+        const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: false,
+          autofillManager,
+        });
+
+        assertFalse(toggle.checked);
+        assertEquals(
+            0, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        page.set(
+            `prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, true);
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+        await flushTasks();
+
+        // On RPC error, fallback enables the toggle to match the pref value.
+        assertTrue(toggle.checked);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+      });
+
+  test(
+      'OtpFillingToggleExternallyDisabledAndReEnabledUpdatesToggle',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        autofillManager.setUserDataProcessingConsent({
+          commsApps: ConsentState.ENABLED,
+          googleApps: ConsentState.ENABLED,
+        });
+        const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: true,
+          autofillManager,
+        });
+
+        assertTrue(toggle.checked);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // Externally disable pref: toggle becomes unchecked.
+        page.set(
+            `prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, false);
+        await flushTasks();
+        assertFalse(toggle.checked);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // Externally re-enable pref: consent is refetched.
+        autofillManager.resetResolver('fetchUserDataProcessingConsent');
+        page.set(
+            `prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, true);
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+        await flushTasks();
+
+        assertTrue(toggle.checked);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+      });
+
+  test(
+      'OtpFillingToggleExternallyDisabledDuringInFlightFetchIgnores' +
+          'StaleResponse',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        const consentResolver = Promise.withResolvers<ConsentStates>();
+        autofillManager.fetchUserDataProcessingConsent = () => {
+          autofillManager.methodCalled('fetchUserDataProcessingConsent');
+          return consentResolver.promise;
+        };
+
+        const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: false,
+          autofillManager,
+        });
+
+        assertFalse(toggle.checked);
+        assertEquals(
+            0, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // Externally enable pref: starts consent fetch.
+        page.set(
+            `prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, true);
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // Externally disable pref before fetch resolves.
+        page.set(
+            `prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, false);
+        await flushTasks();
+
+        // Stale fetch now resolves with ENABLED consent.
+        consentResolver.resolve({
+          commsApps: ConsentState.ENABLED,
+          googleApps: ConsentState.ENABLED,
+        });
+        await flushTasks();
+
+        // The stale response must NOT re-enable the toggle.
+        assertFalse(toggle.checked);
+        assertFalse(page.get('otpFillingTogglePref_.value'));
+        assertFalse(
+            isVisible(page.$.otpFillingLoadingRow),
+            'loading row should not be shown after state reset');
+      });
+
+  test(
+      'OtpFillingToggleExternallyDisabledDuringInFlightFetchErrorIgnoresStale',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        const consentResolver = Promise.withResolvers<ConsentStates>();
+        autofillManager.fetchUserDataProcessingConsent = () => {
+          autofillManager.methodCalled('fetchUserDataProcessingConsent');
+          return consentResolver.promise;
+        };
+
+        const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: false,
+          autofillManager,
+        });
+
+        assertFalse(toggle.checked);
+
+        // Externally enable pref: starts consent fetch.
+        page.set(
+            `prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, true);
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+
+        // Externally disable pref before fetch resolves.
+        page.set(
+            `prefs.${AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF}.value`, false);
+        await flushTasks();
+
+        // Stale fetch rejects.
+        consentResolver.reject(new Error('Network failure'));
+        await flushTasks();
+
+        // The stale error must NOT re-enable the toggle.
+        assertFalse(toggle.checked);
+        assertFalse(page.get('otpFillingTogglePref_.value'));
+      });
+
+  test('OtpFillingToggleDirectlyTurnedOff', async function() {
+    const metricsTracker = fakeMetricsPrivate();
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const {page, toggle, autofillManager} =
+        await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: true,
+        });
+
+    assertTrue(toggle.checked);
+
+    toggle.click();
+    await flushTasks();
+
+    assertFalse(toggle.checked);
+    assertFalse(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        1,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, false));
+    assertEquals(
+        1, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+        'fetchUserDataProcessingConsent should not be called on disable');
+  });
+
+  test('OtpFillingToggleDirectlyTurnedOn', async function() {
+    const metricsTracker = fakeMetricsPrivate();
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    });
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+    });
+
+    assertFalse(toggle.checked);
+    assertFalse(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        0, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    assertTrue(toggle.checked);
+    assertTrue(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        1,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, true));
+    assertEquals(
+        0,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, false));
+    assertFalse(
+        !!page.shadowRoot!.querySelector(
+            'settings-gmail-otp-disclaimer-dialog'),
+        'disclaimer dialog should not be shown');
+    assertEquals(
+        1, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+        'fetchUserDataProcessingConsent should be called once on enable');
+    assertFalse(
+        isVisible(page.$.otpFillingLoadingSpinner),
+        'spinner should not be visible after consent is fetched');
+
+    // Turn OFF again
+    toggle.click();
+    await flushTasks();
+
+    assertFalse(toggle.checked);
+    assertFalse(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        1,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, true));
+    assertEquals(
+        1,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, false));
+    assertEquals(
+        1, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+        'fetchUserDataProcessingConsent should not be called when toggled off');
+
+    // Turn ON again
+    autofillManager.resetResolver('fetchUserDataProcessingConsent');
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    assertTrue(toggle.checked);
+    assertTrue(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        2,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, true));
+    assertEquals(
+        1,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, false));
+    assertEquals(
+        1, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+        'fetchUserDataProcessingConsent should be called after reset');
+  });
+
+  test('OtpFillingLearnMoreLinkClicked', async function() {
+    loadTimeData.overrideValues({
+      autofillGmailOtpFillingEnabled: true,
+      gmailOtpFillingLearnMoreUrl: 'https://support.google.com/test-otp',
+    });
+    const openWindowProxy = new TestOpenWindowProxy();
+    OpenWindowProxyImpl.setInstance(openWindowProxy);
+
+    const {toggle} = await createContactInfoPageForGmailOtpFilling();
+
+    toggle.dispatchEvent(new CustomEvent('sub-label-link-clicked'));
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals('https://support.google.com/test-otp', url);
+  });
+
+  test('OtpFillingLoadingSpinnerMinimumDuration', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+      minSpinnerDurationMs: 200,
+    });
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    // Immediately after fetch resolution, spinner and loading row are still
+    // displayed because of 200ms min duration, and toggle is hidden.
+    const spinner = page.$.otpFillingLoadingSpinner;
+    assertTrue(
+        isVisible(spinner),
+        'spinner should be visible during minimum duration');
+    assertTrue(
+        isVisible(page.$.otpFillingLoadingRow),
+        'loading row should be visible during loading');
+    assertFalse(
+        isVisible(toggle),
+        'toggle should be hidden by loading row during loading');
+
+    // After 250ms, spinner finishes and toggle reappears.
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await flushTasks();
+
+    assertFalse(
+        isVisible(page.$.otpFillingLoadingSpinner),
+        'spinner should disappear after min duration');
+    assertFalse(
+        isVisible(page.$.otpFillingLoadingRow),
+        'loading row should disappear after min duration');
+    assertTrue(isVisible(toggle));
+    assertTrue(toggle.checked);
+  });
+
+
+  test('FetchConsentFastSuccessWaitsForMinDuration', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    const expectedConsent: ConsentStates = {
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    };
+    autofillManager.setUserDataProcessingConsent(expectedConsent);
+    const {page} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+      minSpinnerDurationMs: 150,
+    });
+
+    const startTime = performance.now();
+    const consent = await page.fetchConsentWithMinDurationForTesting();
+    const elapsed = performance.now() - startTime;
+
+    assertDeepEquals(expectedConsent, consent);
+    assertTrue(elapsed >= 140, `Expected elapsed >= 140ms, got ${elapsed}ms`);
+  });
+
+  test('FetchConsentSlowSuccessReturnsImmediately', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    const expectedConsent: ConsentStates = {
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    };
+    autofillManager.fetchUserDataProcessingConsent = () =>
+        new Promise(resolve => setTimeout(() => resolve(expectedConsent), 200));
+
+    const {page} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+      minSpinnerDurationMs: 50,
+    });
+
+    const startTime = performance.now();
+    const consent = await page.fetchConsentWithMinDurationForTesting();
+    const elapsed = performance.now() - startTime;
+
+    assertDeepEquals(expectedConsent, consent);
+    assertTrue(elapsed >= 190, `Expected elapsed >= 190ms, got ${elapsed}ms`);
+  });
+
+  test('FetchConsentFastFailureWaitsForMinDuration', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.fetchUserDataProcessingConsent = () =>
+        Promise.reject(new Error('Fast error'));
+
+    const {page} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+      minSpinnerDurationMs: 150,
+    });
+
+    const startTime = performance.now();
+    let caughtError: Error|null = null;
+    try {
+      await page.fetchConsentWithMinDurationForTesting();
+    } catch (err) {
+      caughtError = err as Error;
+    }
+    const elapsed = performance.now() - startTime;
+
+    assertTrue(!!caughtError);
+    assertEquals('Fast error', caughtError.message);
+    assertTrue(elapsed >= 140, `Expected elapsed >= 140ms, got ${elapsed}ms`);
+  });
+
+  test('FetchConsentSlowFailureReturnsImmediately', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.fetchUserDataProcessingConsent = () => new Promise(
+        (_, reject) => setTimeout(() => reject(new Error('Slow error')), 200));
+
+    const {page} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+      minSpinnerDurationMs: 50,
+    });
+
+    const startTime = performance.now();
+    let caughtError: Error|null = null;
+    try {
+      await page.fetchConsentWithMinDurationForTesting();
+    } catch (err) {
+      caughtError = err as Error;
+    }
+    const elapsed = performance.now() - startTime;
+
+    assertTrue(!!caughtError);
+    assertEquals('Slow error', caughtError.message);
+    assertTrue(elapsed >= 190, `Expected elapsed >= 190ms, got ${elapsed}ms`);
+  });
+
+  test('OtpFillingToggleDisconnectedDuringInitialLoad', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    });
+
+    const {page} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: true,
+      autofillManager,
+      minSpinnerDurationMs: 200,
+    });
+
+    // Remove page from DOM while minimum duration delay is in flight.
+    page.remove();
+    assertFalse(page.isConnected);
+
+    // Wait for the in-flight fetch and min duration to settle.
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await flushTasks();
+
+    // Verify toggle remains hidden while disconnected.
+    const toggle = page.$.autofillOtpFillingToggle;
+    assertTrue(toggle.hidden);
+  });
+
+  test('OtpFillingToggleDisconnectedDuringUserToggle', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    });
+
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+      minSpinnerDurationMs: 200,
+    });
+    assertFalse(toggle.checked);
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+
+    // Disconnect page while consent fetch is in flight.
+    page.remove();
+    assertFalse(page.isConnected);
+
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await flushTasks();
+
+    // Preference should remain unchanged (false).
+    assertFalse(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+  });
+
+  test('OtpFillingToggleFocusRestoredOnConsentGranted', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    });
+
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+    });
+    assertFalse(toggle.checked);
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    assertTrue(toggle.checked);
+    assertTrue(
+        page.shadowRoot!.activeElement === toggle,
+        'focus should be restored to toggle after consent is granted');
+  });
+
+  test('OtpFillingToggleFocusRestoredOnConsentFetchError', async function() {
+    // When consent fetch fails, the toggle falls back to enabled to avoid
+    // blocking users and restores focus.
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.fetchUserDataProcessingConsent = () => {
+      autofillManager.methodCalled('fetchUserDataProcessingConsent');
+      return Promise.reject(new Error('Network failure'));
+    };
+
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+    });
+    assertFalse(toggle.checked);
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    assertTrue(toggle.checked);
+    assertTrue(
+        page.shadowRoot!.activeElement === toggle,
+        'focus should be restored to toggle after consent fetch fails');
+  });
+
+  test(
+      'OtpFillingToggleInitiallyOnWhenPrefIsOnAndConsentGranted',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        autofillManager.setUserDataProcessingConsent({
+          commsApps: ConsentState.ENABLED,
+          googleApps: ConsentState.ENABLED,
+        });
+
+        const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: true,
+          autofillManager,
+        });
+
+        assertTrue(isVisible(toggle));
+        assertTrue(toggle.checked);
+        assertTrue(
+            page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF)
+                .value);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+      });
+
+  test(
+      'OtpFillingToggleInitiallyOffWhenPrefIsOnAndConsentNotGranted',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        autofillManager.setUserDataProcessingConsent({
+          commsApps: ConsentState.DISABLED,
+          googleApps: ConsentState.ENABLED,
+        });
+
+        const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: true,
+          autofillManager,
+        });
+
+        assertTrue(isVisible(toggle));
+        // Displayed as off in the UI because consent is missing.
+        assertFalse(toggle.checked);
+        // Preference remains on in the background.
+        assertTrue(
+            page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF)
+                .value);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+      });
+
+  test(
+      'OtpFillingToggleInitiallyOnWhenPrefIsOnAndFetchThrowsError',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        autofillManager.fetchUserDataProcessingConsent = () => {
+          autofillManager.methodCalled('fetchUserDataProcessingConsent');
+          return Promise.reject(new Error('Fetch failed'));
+        };
+
+        const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: true,
+          autofillManager,
+        });
+
+        assertTrue(isVisible(toggle));
+        assertTrue(toggle.checked);
+        assertTrue(
+            page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF)
+                .value);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+      });
+
+  test(
+      'OtpFillingToggleInitiallyOffWhenPrefIsOnAndConsentUnknown',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        autofillManager.setUserDataProcessingConsent({
+          commsApps: ConsentState.UNKNOWN,
+          googleApps: ConsentState.UNKNOWN,
+        });
+
+        const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: true,
+          autofillManager,
+        });
+
+        assertTrue(isVisible(toggle));
+        assertFalse(toggle.checked);
+        assertTrue(
+            page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF)
+                .value);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+      });
+
+  test('OtpFillingToggleTurnedOnEnablesWhenFetchThrowsError', async function() {
+    const metricsTracker = fakeMetricsPrivate();
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.fetchUserDataProcessingConsent = () => {
+      autofillManager.methodCalled('fetchUserDataProcessingConsent');
+      return Promise.reject(new Error('Failed to fetch consent'));
+    };
+
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+    });
+    assertFalse(toggle.checked);
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    // Toggle is switched on in UI, but pref is not saved.
+    assertTrue(toggle.checked);
+    assertFalse(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        0,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, true));
+    assertFalse(
+        !!page.shadowRoot!.querySelector(
+            'settings-gmail-otp-disclaimer-dialog'),
+        'disclaimer dialog should not be shown on error');
+  });
+
+  [{
+    commsApps: ConsentState.DISABLED,
+    googleApps: ConsentState.ENABLED,
+    testName: 'CommsAppsConsentNotEnabled',
+  },
+   {
+     commsApps: ConsentState.ENABLED,
+     googleApps: ConsentState.DISABLED,
+     testName: 'GoogleAppsConsentNotEnabled',
+   },
+   {
+     commsApps: ConsentState.DISABLED,
+     googleApps: ConsentState.DISABLED,
+     testName: 'BothConsentsDisabled',
+   },
+  ].forEach(({commsApps, googleApps, testName}) => {
+    test(
+        `OtpFillingToggleShowsDisclaimerWhen${testName}AndConfirmed`,
+        async function() {
+          const metricsTracker = fakeMetricsPrivate();
+          loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+          const autofillManager = new TestAutofillManager();
+          autofillManager.setUserDataProcessingConsent({
+            commsApps,
+            googleApps,
+          });
+
+          const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+            gmailOtpFilling: false,
+            autofillManager,
+          });
+          assertFalse(toggle.checked);
+          assertFalse(
+              page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF)
+                  .value);
+
+          toggle.click();
+          await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+          await flushTasks();
+
+          // Toggle UI element is turned off after loading indicator.
+          assertFalse(toggle.checked);
+
+          // Disclaimer dialog is shown.
+          const dialog =
+              page.shadowRoot!
+                  .querySelector<SettingsGmailOtpDisclaimerDialogElement>(
+                      'settings-gmail-otp-disclaimer-dialog');
+          assertTrue(!!dialog, 'disclaimer dialog should be shown');
+
+          // Confirming the dialog does not enable the feature.
+          dialog.$.confirmButton.click();
+          await eventToPromise('close', dialog.$.dialog);
+          await flushTasks();
+
+          assertFalse(
+              !!page.shadowRoot!.querySelector(
+                  'settings-gmail-otp-disclaimer-dialog'),
+              'disclaimer dialog should be closed');
+          assertFalse(toggle.checked);
+          assertFalse(
+              page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF)
+                  .value);
+          assertEquals(
+              0,
+              metricsTracker.count(
+                  AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, true));
+        });
+  });
+
+  test('OtpFillingToggleShowsDisclaimerAndCancels', async function() {
+    const metricsTracker = fakeMetricsPrivate();
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.UNKNOWN,
+      googleApps: ConsentState.UNKNOWN,
+    });
+
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+    });
+    assertFalse(toggle.checked);
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    const dialog =
+        page.shadowRoot!.querySelector<SettingsGmailOtpDisclaimerDialogElement>(
+            'settings-gmail-otp-disclaimer-dialog');
+    assertTrue(!!dialog);
+
+    // Cancel dialog.
+    dialog.$.dialog.cancel();
+    await eventToPromise('close', dialog.$.dialog);
+    await flushTasks();
+
+    assertFalse(
+        !!page.shadowRoot!.querySelector(
+            'settings-gmail-otp-disclaimer-dialog'),
+        'disclaimer dialog should be closed');
+    assertFalse(toggle.checked);
+    assertFalse(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        0,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, true));
+    assertEquals(
+        0,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, false));
+  });
+
+  test('OtpFillingToggleDismissAndRetry', async function() {
+    const metricsTracker = fakeMetricsPrivate();
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.DISABLED,
+      googleApps: ConsentState.DISABLED,
+    });
+
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+    });
+    assertFalse(toggle.checked);
+
+    // First attempt: dismiss/cancel dialog.
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    let dialog =
+        page.shadowRoot!.querySelector<SettingsGmailOtpDisclaimerDialogElement>(
+            'settings-gmail-otp-disclaimer-dialog');
+    assertTrue(!!dialog);
+    dialog.$.dialog.cancel();
+    await eventToPromise('close', dialog.$.dialog);
+    await flushTasks();
+
+    assertFalse(toggle.checked);
+    assertFalse(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        0,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, true));
+
+    // Reset resolver for second attempt.
+    autofillManager.resetResolver('fetchUserDataProcessingConsent');
+
+    // Second attempt: confirm dialog (still disabled).
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    dialog =
+        page.shadowRoot!.querySelector<SettingsGmailOtpDisclaimerDialogElement>(
+            'settings-gmail-otp-disclaimer-dialog');
+    assertTrue(!!dialog);
+    dialog.$.confirmButton.click();
+    await eventToPromise('close', dialog.$.dialog);
+    await flushTasks();
+
+    assertFalse(toggle.checked);
+    assertFalse(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        0,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, true));
+
+    // Third attempt: consent is now granted in Gmail settings.
+    autofillManager.resetResolver('fetchUserDataProcessingConsent');
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    });
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    assertFalse(!!page.shadowRoot!.querySelector(
+        'settings-gmail-otp-disclaimer-dialog'));
+    assertTrue(toggle.checked);
+    assertTrue(
+        page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF).value);
+    assertEquals(
+        1,
+        metricsTracker.count(
+            AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, true));
+  });
+
+  test('OtpFillingLearnMoreLinkClickedDuringLoading', async function() {
+    loadTimeData.overrideValues({
+      autofillGmailOtpFillingEnabled: true,
+      gmailOtpFillingLearnMoreUrl: 'https://support.google.com/test-otp',
+      enableGmailOtpFillingDescription:
+          '<a href="https://support.google.com/test-otp">Learn more</a>',
+    });
+    const openWindowProxy = new TestOpenWindowProxy();
+    OpenWindowProxyImpl.setInstance(openWindowProxy);
+
+    const consentResolvers = Promise.withResolvers<ConsentStates>();
+    const autofillManager = new TestAutofillManager();
+    autofillManager.fetchUserDataProcessingConsent = () => {
+      autofillManager.methodCalled('fetchUserDataProcessingConsent');
+      return consentResolvers.promise;
+    };
+
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+    });
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    assertTrue(
+        isVisible(page.$.otpFillingLoadingRow),
+        'loading row should be visible during loading');
+    assertFalse(
+        isVisible(toggle),
+        'toggle should be hidden by loading row during loading');
+    assertTrue(
+        isVisible(page.$.otpFillingLoadingSpinner),
+        'spinner should be visible during loading');
+
+    const link =
+        page.$.otpFillingLoadingSubLabelWithLink.querySelector<HTMLElement>(
+            'a');
+    assertTrue(!!link);
+    link.click();
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals('https://support.google.com/test-otp', url);
+
+    consentResolvers.resolve({
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    });
+    await flushTasks();
+  });
+
+  test('OtpFillingLoadingSpinnerShownDuringInitialLoad', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    const {page} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: true,
+      autofillManager,
+      minSpinnerDurationMs: 200,
+    });
+
+    // During the 200ms minimum duration, loading row and spinner are displayed
+    // while the toggle is hidden.
+    const loadingRow = page.$.otpFillingLoadingRow;
+    assertTrue(
+        isVisible(loadingRow),
+        'loading row should be visible during initial load');
+    assertTrue(loadingRow.classList.contains('hr'));
+    const spinner = page.$.otpFillingLoadingSpinner;
+    assertTrue(
+        isVisible(spinner), 'spinner should be visible during initial load');
+    assertFalse(
+        isVisible(page.$.autofillOtpFillingToggle),
+        'toggle should not be visible during loading');
+
+    // Wait for spinner duration to finish.
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await flushTasks();
+
+    assertFalse(
+        isVisible(page.$.otpFillingLoadingSpinner),
+        'spinner should disappear after min duration');
+    assertFalse(
+        isVisible(page.$.otpFillingLoadingRow),
+        'loading row should disappear after min duration');
+    const toggle = page.$.autofillOtpFillingToggle;
+    assertTrue(isVisible(toggle));
+    assertTrue(toggle.classList.contains('hr'));
+    assertTrue(toggle.checked);
+
+    // Reset spinner duration to prevent bleeding into other tests.
+    page.minOtpConsentSpinnerDurationMs = 0;
+  });
+
+  test('OtpFillingDisclaimerDialogFocusRestoration', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.DISABLED,
+      googleApps: ConsentState.DISABLED,
+    });
+
+    const {page, toggle} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: false,
+      autofillManager,
+    });
+
+    toggle.click();
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    const dialog =
+        page.shadowRoot!.querySelector<SettingsGmailOtpDisclaimerDialogElement>(
+            'settings-gmail-otp-disclaimer-dialog');
+    assertTrue(!!dialog);
+
+    // Cancel dialog and verify focus.
+    dialog.$.dialog.cancel();
+    await eventToPromise('close', dialog.$.dialog);
+    await flushTasks();
+
+    assertEquals(
+        toggle, page.shadowRoot!.activeElement,
+        'focus should be restored to toggle after dialog close');
+  });
+
+  test('OtpFillingToggleResetsAndRechecksOnSignOutAndSignIn', async function() {
+    loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+    const autofillManager = new TestAutofillManager();
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.DISABLED,
+      googleApps: ConsentState.DISABLED,
+    });
+
+    const {page} = await createContactInfoPageForGmailOtpFilling({
+      gmailOtpFilling: true,
+      autofillManager,
+    });
+
+    const toggle = page.$.autofillOtpFillingToggle;
+    assertTrue(isVisible(toggle));
+    // Initially displayed as off because consent is DISABLED.
+    assertFalse(toggle.checked);
+    assertEquals(
+        1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+    // Sign out: toggle hidden.
+    const changeListener =
+        autofillManager.lastCallback.setPersonalDataManagerListener!;
+    changeListener([], [], [], [], undefined);
+    flush();
+    assertFalse(isVisible(toggle));
+
+    // Update consent state on manager.
+    autofillManager.resetResolver('fetchUserDataProcessingConsent');
+    autofillManager.setUserDataProcessingConsent({
+      commsApps: ConsentState.ENABLED,
+      googleApps: ConsentState.ENABLED,
+    });
+
+    // Sign in: toggle visible and consent re-checked.
+    changeListener([], [], [], [], STUB_USER_ACCOUNT_INFO);
+    await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+    await flushTasks();
+
+    assertTrue(isVisible(toggle));
+    assertTrue(toggle.checked);
+  });
+
+  test(
+      'OtpFillingToggleDirectAccountSwitchRechecksConsentAndUpdatesToggle',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        // 1. Initial State: Account A is signed in with consent ENABLED.
+        autofillManager.setUserDataProcessingConsent({
+          commsApps: ConsentState.ENABLED,
+          googleApps: ConsentState.ENABLED,
+        });
+
+        const accountA: chrome.autofillPrivate.AccountInfo = {
+          email: 'primary.user@gmail.com',
+          isSyncEnabledForAutofillProfiles: true,
+          isEligibleForAddressAccountStorage: true,
+        };
+        const {page} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: true,
+          autofillManager,
+          accountInfo: accountA,
+        });
+
+        const toggle = page.$.autofillOtpFillingToggle;
+        assertTrue(isVisible(toggle));
+        assertTrue(toggle.checked);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // 2. Direct Account Switch to Account B (consent DISABLED) without
+        // signing out.
+        autofillManager.resetResolver('fetchUserDataProcessingConsent');
+        autofillManager.setUserDataProcessingConsent({
+          commsApps: ConsentState.DISABLED,
+          googleApps: ConsentState.DISABLED,
+        });
+
+        const accountB: chrome.autofillPrivate.AccountInfo = {
+          email: 'secondary.user@gmail.com',
+          isSyncEnabledForAutofillProfiles: true,
+          isEligibleForAddressAccountStorage: true,
+        };
+        const changeListener =
+            autofillManager.lastCallback.setPersonalDataManagerListener!;
+        changeListener([], [], [], [], accountB);
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+        await flushTasks();
+
+        assertTrue(isVisible(toggle));
+        assertFalse(toggle.checked, 'toggle should be off for secondary user');
+        assertTrue(
+            page.getPref<boolean>(AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF)
+                .value);
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // 3. Switch back to Account A (consent ENABLED): refetches and turns
+        // on.
+        autofillManager.resetResolver('fetchUserDataProcessingConsent');
+        autofillManager.setUserDataProcessingConsent({
+          commsApps: ConsentState.ENABLED,
+          googleApps: ConsentState.ENABLED,
+        });
+
+        changeListener([], [], [], [], accountA);
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+        await flushTasks();
+
+        assertTrue(isVisible(toggle));
+        assertTrue(
+            toggle.checked, 'toggle should be restored on for primary user');
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // 4. Update Account A with same email (sync status change): should
+        // NOT refetch.
+        changeListener([], [], [], [], {
+          email: 'primary.user@gmail.com',
+          isSyncEnabledForAutofillProfiles: false,
+          isEligibleForAddressAccountStorage: true,
+        });
+        await flushTasks();
+
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+            'should not refetch when email is unchanged');
+      });
+
+  test(
+      'OtpFillingToggleAccountSwitchWhilePrefDisabledDoesNotFetch',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+        autofillManager.setUserDataProcessingConsent({
+          commsApps: ConsentState.ENABLED,
+          googleApps: ConsentState.ENABLED,
+        });
+
+        const accountA: chrome.autofillPrivate.AccountInfo = {
+          email: 'primary.user@gmail.com',
+          isSyncEnabledForAutofillProfiles: true,
+          isEligibleForAddressAccountStorage: true,
+        };
+        const {toggle} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: false,
+          autofillManager,
+          accountInfo: accountA,
+        });
+        assertTrue(isVisible(toggle));
+        assertFalse(toggle.checked);
+        assertEquals(
+            0, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+            'should not fetch consent initially when pref is off');
+
+        // Switch to Account B while pref is still disabled.
+        const accountB: chrome.autofillPrivate.AccountInfo = {
+          email: 'secondary.user@gmail.com',
+          isSyncEnabledForAutofillProfiles: true,
+          isEligibleForAddressAccountStorage: true,
+        };
+        const changeListener =
+            autofillManager.lastCallback.setPersonalDataManagerListener!;
+        changeListener([], [], [], [], accountB);
+        await flushTasks();
+
+        assertEquals(
+            0, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+            'should not fetch consent on account switch when pref is off');
+
+        // User turns toggle on for Account B: should fetch consent for
+        // Account B.
+        toggle.click();
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+        await flushTasks();
+
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'),
+            'should fetch consent when toggle is turned on for new account');
+        assertTrue(toggle.checked);
+      });
+
+  test(
+      'OtpFillingToggleAccountSwitchDuringInFlightFetchIgnoresStaleResponse',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+
+        const accountAResolvers = Promise.withResolvers<ConsentStates>();
+        const accountBResolvers = Promise.withResolvers<ConsentStates>();
+
+        const accountA: chrome.autofillPrivate.AccountInfo = {
+          email: 'userA@gmail.com',
+          isSyncEnabledForAutofillProfiles: true,
+          isEligibleForAddressAccountStorage: true,
+        };
+        const accountB: chrome.autofillPrivate.AccountInfo = {
+          email: 'userB@gmail.com',
+          isSyncEnabledForAutofillProfiles: true,
+          isEligibleForAddressAccountStorage: true,
+        };
+
+        let fetchCount = 0;
+        autofillManager.fetchUserDataProcessingConsent = () => {
+          autofillManager.methodCalled('fetchUserDataProcessingConsent');
+          fetchCount++;
+          return fetchCount === 1 ? accountAResolvers.promise :
+                                    accountBResolvers.promise;
+        };
+
+        const {page} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: true,
+          autofillManager,
+          accountInfo: accountA,
+        });
+
+        // Account A's fetch is in flight.
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // Switch to Account B before Account A's fetch resolves.
+        autofillManager.resetResolver('fetchUserDataProcessingConsent');
+        const changeListener =
+            autofillManager.lastCallback.setPersonalDataManagerListener!;
+        changeListener([], [], [], [], accountB);
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // Account A resolves with ENABLED consent (stale response).
+        accountAResolvers.resolve({
+          commsApps: ConsentState.ENABLED,
+          googleApps: ConsentState.ENABLED,
+        });
+        await flushTasks();
+
+        // Toggle should NOT be enabled by Account A's stale response.
+        // Since Account B's fetch is still in flight, the loading row is still
+        // shown and the backing toggle pref is false (not enabled by A).
+        assertTrue(
+            isVisible(page.$.otpFillingLoadingRow),
+            'loading row should be visible while Account B fetch is in flight');
+        assertFalse(
+            isVisible(page.$.autofillOtpFillingToggle),
+            'toggle should be hidden while Account B fetch is in flight');
+        assertFalse(
+            page.get('otpFillingTogglePref_.value'),
+            'backing pref should not be enabled by stale Account A response');
+
+        // Account B resolves with DISABLED consent.
+        accountBResolvers.resolve({
+          commsApps: ConsentState.DISABLED,
+          googleApps: ConsentState.DISABLED,
+        });
+        await flushTasks();
+
+        const toggle = page.$.autofillOtpFillingToggle;
+        assertTrue(isVisible(toggle));
+        assertFalse(toggle.checked);
+      });
+
+  test(
+      'OtpFillingToggleAccountSwitchDuringInFlightFetchErrorIgnoresStale',
+      async function() {
+        loadTimeData.overrideValues({autofillGmailOtpFillingEnabled: true});
+        const autofillManager = new TestAutofillManager();
+
+        const accountAResolvers = Promise.withResolvers<ConsentStates>();
+        const accountBResolvers = Promise.withResolvers<ConsentStates>();
+
+        const accountA: chrome.autofillPrivate.AccountInfo = {
+          email: 'userA@gmail.com',
+          isSyncEnabledForAutofillProfiles: true,
+          isEligibleForAddressAccountStorage: true,
+        };
+        const accountB: chrome.autofillPrivate.AccountInfo = {
+          email: 'userB@gmail.com',
+          isSyncEnabledForAutofillProfiles: true,
+          isEligibleForAddressAccountStorage: true,
+        };
+
+        let fetchCount = 0;
+        autofillManager.fetchUserDataProcessingConsent = () => {
+          autofillManager.methodCalled('fetchUserDataProcessingConsent');
+          fetchCount++;
+          return fetchCount === 1 ? accountAResolvers.promise :
+                                    accountBResolvers.promise;
+        };
+
+        const {page} = await createContactInfoPageForGmailOtpFilling({
+          gmailOtpFilling: true,
+          autofillManager,
+          accountInfo: accountA,
+        });
+
+        // Account A's fetch is in flight.
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // Switch to Account B before Account A's fetch settles.
+        autofillManager.resetResolver('fetchUserDataProcessingConsent');
+        const changeListener =
+            autofillManager.lastCallback.setPersonalDataManagerListener!;
+        changeListener([], [], [], [], accountB);
+        await autofillManager.whenCalled('fetchUserDataProcessingConsent');
+        assertEquals(
+            1, autofillManager.getCallCount('fetchUserDataProcessingConsent'));
+
+        // Account A rejects with an error (stale error).
+        accountAResolvers.reject(new Error('Network failure'));
+        await flushTasks();
+
+        // Toggle should NOT fall back to enabled by Account A's stale error,
+        // and loading state should remain active while Account B's fetch is in
+        // flight.
+        assertTrue(
+            isVisible(page.$.otpFillingLoadingRow),
+            'loading row should be visible while Account B fetch is in flight');
+        assertFalse(
+            isVisible(page.$.autofillOtpFillingToggle),
+            'toggle should be hidden while Account B fetch is in flight');
+        assertFalse(
+            page.get('otpFillingTogglePref_.value'),
+            'backing pref should not be enabled by stale Account A error');
+
+        // Account B resolves with DISABLED consent.
+        accountBResolvers.resolve({
+          commsApps: ConsentState.DISABLED,
+          googleApps: ConsentState.DISABLED,
+        });
+        await flushTasks();
+
+        const toggle = page.$.autofillOtpFillingToggle;
+        assertTrue(isVisible(toggle));
+        assertFalse(toggle.checked);
+      });
+});
+
+suite('ContactInfoPageAddressTests', function() {
+  let countryDetailManager: TestCountryDetailManagerProxy;
+  let metricsTracker: MetricsTracker;
+
+  setup(function() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    metricsTracker = fakeMetricsPrivate();
+
+    countryDetailManager = new TestCountryDetailManagerProxy();
+    CountryDetailManagerProxyImpl.setInstance(countryDetailManager);
+
+    countryDetailManager.setGetCountryListRepsonse([
+      {name: 'United States', countryCode: 'US'},  // Default country.
+      {name: 'Israel', countryCode: 'IL'},
+      {name: 'United Kingdom', countryCode: 'GB'},
+    ]);
+    countryDetailManager.setGetAddressFormatRepsonse(ADDRESS_COMPONENTS_US);
+  });
+
+  test('verifyAutofillAddressToggleMetric', async function() {
+    const page =
+        await createContactInfoPage([], {profile_enabled: {value: true}});
+    const button = page.$.autofillProfileToggle;
+    assertTrue(!!button);
+
+    // The address profile toggle is on by default.
+    assertTrue(button.checked);
+    assertEquals(metricsTracker.count('Autofill.Address.IsEnabled.Change'), 0);
+
+    // Test that toggling the button off records the correct metric.
+    button.click();
+    assertEquals(metricsTracker.count('Autofill.Address.IsEnabled.Change'), 1);
+    assertEquals(
+        metricsTracker.count(
+            'Autofill.Address.IsEnabled.Change',
+            AutofillAddressOptInChange.OPT_OUT),
+        1);
+
+    // Test that toggling the button on records the correct metric.
+    button.click();
+    assertEquals(metricsTracker.count('Autofill.Address.IsEnabled.Change'), 2);
+    assertEquals(
+        metricsTracker.count(
+            'Autofill.Address.IsEnabled.Change',
+            AutofillAddressOptInChange.OPT_IN),
+        1);
+  });
+
+  test('verifyNoAddresses', async function() {
+    const page =
+        await createContactInfoPage([], {profile_enabled: {value: true}});
+
+    const addressList = page.$.addressList;
+    assertTrue(!!addressList);
+    // 1 for the template element.
+    assertEquals(1, addressList.children.length);
+
+    assertFalse(page.$.noAddressesLabel.hidden);
+    assertFalse(page.$.addAddress.disabled);
+    assertFalse(page.$.autofillProfileToggle.disabled);
+  });
+
+  test('verifyAddressCount', async function() {
+    const addresses = [
+      createAddressEntry(),
+      createAddressEntry(),
+      createAddressEntry(),
+      createAddressEntry(),
+      createAddressEntry(),
+    ];
+
+    const page = await createContactInfoPage(
+        addresses, {profile_enabled: {value: true}});
+
+    const addressList = page.$.addressList;
+    assertTrue(!!addressList);
+    assertEquals(
+        addresses.length, addressList.querySelectorAll('.list-item').length);
+
+    assertTrue(page.$.noAddressesLabel.hidden);
+    assertFalse(page.$.autofillProfileToggle.disabled);
+    assertFalse(page.$.addAddress.disabled);
+  });
+
+  test('verifyAddressDisabled', async function() {
+    const page =
+        await createContactInfoPage([], {profile_enabled: {value: false}});
+
+    assertFalse(page.$.autofillProfileToggle.disabled);
+    assertFalse(page.$.addAddress.hidden);
+    assertTrue(page.$.addAddress.disabled);
+  });
+
+  test('verifyAddressFields', async function() {
+    const address = createAddressEntry();
+    const page = await createContactInfoPage([address], {});
+    const addressList = page.$.addressList;
+    const row = addressList.children[0];
+    assertTrue(!!row);
+
+    const addressSummary =
+        address.metadata!.summaryLabel + address.metadata!.summarySublabel;
+
+    let actualSummary = '';
+
+    // Eliminate white space between nodes!
+    const addressPieces = row.querySelector('#addressSummary')!.children;
+    for (const addressPiece of addressPieces) {
+      actualSummary += addressPiece.textContent.trim();
+    }
+
+    assertEquals(addressSummary, actualSummary);
+  });
+
+  test('verifyAddressLocalIndication', async () => {
+    const autofillManager = new TestAutofillManager();
+    autofillManager.data.addresses = [createAddressEntry()];
+    autofillManager.data.accountInfo = {
+      ...STUB_USER_ACCOUNT_INFO,
+      isSyncEnabledForAutofillProfiles: true,
+    };
+    AutofillManagerImpl.setInstance(autofillManager);
+
+    const page = document.createElement('settings-contact-info-page');
+    document.body.appendChild(page);
+    await autofillManager.whenCalled('getAddressList');
+    await flushTasks();
+
+    const addressList = page.$.addressList;
+    const getIcon = () => addressList.children[0]!.querySelector<HTMLElement>(
+        '#address-row-icon');
+
+    const iconName1 = getIcon()!.getAttribute('icon');
+    assertFalse(
+        !!iconName1 && iconName1.includes('cloud-off'),
+        'Sync for addresses is enabled, the local indicator should be off.');
+
+    const changeListener =
+        autofillManager.lastCallback.setPersonalDataManagerListener!;
+    changeListener(autofillManager.data.addresses, [], [], [], undefined);
+    const iconName2 = getIcon()!.getAttribute('icon');
+    assertFalse(
+        !!iconName2 && iconName2.includes('cloud-off'),
+        'The local indicator should not be shown to logged-out users');
+
+    changeListener(
+        autofillManager.data.addresses, [], [], [], STUB_USER_ACCOUNT_INFO);
+    assertTrue(
+        isVisible(getIcon()),
+        'Sync is disabled but the feature is on, the icon should be visible.');
+
+    document.body.removeChild(page);
+  });
+
+  test('verifyNoAddressLocalIndicationForAccountNameEmail', async () => {
+    const nameEmailAddress = createAddressEntry();
+    nameEmailAddress.metadata!.recordType =
+        chrome.autofillPrivate.AddressRecordType.ACCOUNT_NAME_EMAIL;
+
+    const autofillManager = new TestAutofillManager();
+    autofillManager.data.addresses = [nameEmailAddress];
+    autofillManager.data.accountInfo = {
+      ...STUB_USER_ACCOUNT_INFO,
+    };
+    AutofillManagerImpl.setInstance(autofillManager);
+
+    const page = document.createElement('settings-contact-info-page');
+    document.body.appendChild(page);
+    await autofillManager.whenCalled('getAddressList');
+    await flushTasks();
+
+    const addressList = page.$.addressList;
+    const getIcon = () => addressList.children[0]!.querySelector<HTMLElement>(
+        '#address-row-icon');
+    const iconName = getIcon()!.getAttribute('icon');
+    assertFalse(
+        !!iconName && iconName.includes('cloud-off'),
+        'Local indicator should not be shown on account name email profile');
+    document.body.removeChild(page);
+  });
+
+  test('verifyAddressRowButtonTriggersDropdown', async function() {
+    const address = createAddressEntry();
+    const page = await createContactInfoPage([address], {});
+    const addressList = page.$.addressList;
+    const row = addressList.children[0];
+    assertTrue(!!row);
+    const menuButton = row.querySelector<HTMLElement>('.address-menu');
+    assertTrue(!!menuButton);
+    menuButton.click();
+    flush();
+
+    assertTrue(!!page.shadowRoot!.querySelector('#menuEditAddress'));
+  });
+
+  test('verifyAccountHomeAddressEdit', async function() {
+    const openWindowProxy = new TestOpenWindowProxy();
+    OpenWindowProxyImpl.setInstance(openWindowProxy);
+    const homeAddress = createAddressEntry();
+    homeAddress.metadata!.recordType =
+        chrome.autofillPrivate.AddressRecordType.ACCOUNT_HOME;
+    const page = await createContactInfoPage([homeAddress], {});
+
+    const addressList = page.$.addressList;
+    const row = addressList.children[0];
+    assertTrue(!!row);
+    const menuButton = row.querySelector<HTMLElement>('.address-menu');
+    assertTrue(!!menuButton);
+    menuButton.click();
+    flush();
+
+    const editButton =
+        page.shadowRoot!.querySelector<HTMLElement>('#menuEditAddress');
+    assertTrue(!!editButton);
+    editButton.click();
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(url, loadTimeData.getString('googleAccountHomeAddressUrl'));
+  });
+
+  test('verifyAccountWorkAddressEdit', async function() {
+    const openWindowProxy = new TestOpenWindowProxy();
+    OpenWindowProxyImpl.setInstance(openWindowProxy);
+    const workAddress = createAddressEntry();
+    workAddress.metadata!.recordType =
+        chrome.autofillPrivate.AddressRecordType.ACCOUNT_WORK;
+    const page = await createContactInfoPage([workAddress], {});
+
+    const addressList = page.$.addressList;
+    const row = addressList.children[0];
+    assertTrue(!!row);
+    const menuButton = row.querySelector<HTMLElement>('.address-menu');
+    assertTrue(!!menuButton);
+    menuButton.click();
+    flush();
+
+    const editButton =
+        page.shadowRoot!.querySelector<HTMLElement>('#menuEditAddress');
+    assertTrue(!!editButton);
+    editButton.click();
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(url, loadTimeData.getString('googleAccountWorkAddressUrl'));
+  });
+
+  test('verifyAccountNameEmailAddressEdit', async function() {
+    const openWindowProxy = new TestOpenWindowProxy();
+    OpenWindowProxyImpl.setInstance(openWindowProxy);
+    const nameEmailAddress = createAddressEntry();
+    nameEmailAddress.metadata!.recordType =
+        chrome.autofillPrivate.AddressRecordType.ACCOUNT_NAME_EMAIL;
+    const page = await createContactInfoPage([nameEmailAddress], {});
+
+    const addressList = page.$.addressList;
+    const row = addressList.children[0];
+    assertTrue(!!row);
+    const menuButton = row.querySelector<HTMLElement>('.address-menu');
+    assertTrue(!!menuButton);
+    menuButton.click();
+    flush();
+
+    const editButton =
+        page.shadowRoot!.querySelector<HTMLElement>('#menuEditAddress');
+    assertTrue(!!editButton);
+    editButton.click();
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(
+        url, loadTimeData.getString('googleAccountNameEmailAddressEditUrl'));
+  });
+
+  test('verifyAddAddressDialog', async function() {
+    const address = createEmptyAddressEntry();
+    const dialog = await createAddressDialog(address);
+    const title = dialog.shadowRoot!.querySelector('[slot=title]')!;
+    assertEquals(loadTimeData.getString('addAddressTitle'), title.textContent);
+    // A country is preselected.
+    const countrySelect = dialog.$.country;
+    assertTrue(!!countrySelect);
+    assertTrue(!!countrySelect.value);
+  });
+
+  test('verifyEditAddressDialog', async function() {
+    const dialog = await createAddressDialog(createAddressEntry());
+    const title = dialog.shadowRoot!.querySelector('[slot=title]')!;
+    assertEquals(loadTimeData.getString('editAddressTitle'), title.textContent);
+    // Should be possible to save when editing because fields are
+    // populated.
+    assertFalse(dialog.$.saveButton.disabled);
+  });
+
+  // The first editable element should be focused by default.
+  test('verifyFirstFieldFocused', async function() {
+    const dialog = await createAddressDialog(createEmptyAddressEntry());
+    const currentFocus = dialog.shadowRoot!.activeElement;
+    const editableElements =
+        dialog.$.dialog.querySelectorAll('cr-input, select');
+    assertEquals(editableElements[0], currentFocus);
+  });
+
+  test('verifyRemoveAddressDialogConfirmed', async function() {
+    const autofillManager = new TestAutofillManager();
+    const removeAddressDialog =
+        await createRemoveAddressDialog(autofillManager);
+
+    // Wait for the dialog to open.
+    await whenAttributeIs(removeAddressDialog.$.dialog, 'open', '');
+
+    removeAddressDialog.$.remove.click();
+
+    // Wait for the dialog to close.
+    await eventToPromise('close', removeAddressDialog);
+
+    assertTrue(removeAddressDialog.wasConfirmed());
+    assertEquals(
+        1,
+        metricsTracker.count('Autofill.ProfileDeleted.Settings.Account', true));
+    assertEquals(
+        0,
+        metricsTracker.count(
+            'Autofill.ProfileDeleted.Settings.Account', false));
+    assertEquals(
+        1,
+        metricsTracker.count('Autofill.ProfileDeleted.Settings.Total', true));
+    assertEquals(
+        0,
+        metricsTracker.count('Autofill.ProfileDeleted.Settings.Total', false));
+    assertEquals(
+        1, metricsTracker.count('Autofill.ProfileDeleted.Any.Account', true));
+    assertEquals(
+        0, metricsTracker.count('Autofill.ProfileDeleted.Any.Account', false));
+    assertEquals(
+        1, metricsTracker.count('Autofill.ProfileDeleted.Any.Total', true));
+    assertEquals(
+        0, metricsTracker.count('Autofill.ProfileDeleted.Any.Total', false));
+
+    const expected = new AutofillManagerExpectations();
+    expected.requestedAddresses = 1;
+    expected.listeningAddresses = 1;
+    expected.removeAddress = 1;
+    autofillManager.assertExpectations(expected);
+  });
+
+  test('verifyRemoveAddressDialogCanceled', async function() {
+    const autofillManager = new TestAutofillManager();
+    const removeAddressDialog =
+        await createRemoveAddressDialog(autofillManager);
+
+    // Wait for the dialog to open.
+    await whenAttributeIs(removeAddressDialog.$.dialog, 'open', '');
+
+    removeAddressDialog.$.cancel.click();
+
+    // Wait for the dialog to close.
+    await eventToPromise('close', removeAddressDialog);
+    assertFalse(removeAddressDialog.wasConfirmed());
+    assertEquals(
+        0,
+        metricsTracker.count('Autofill.ProfileDeleted.Settings.Account', true));
+    assertEquals(
+        1,
+        metricsTracker.count(
+            'Autofill.ProfileDeleted.Settings.Account', false));
+    assertEquals(
+        0,
+        metricsTracker.count('Autofill.ProfileDeleted.Settings.Total', true));
+    assertEquals(
+        1,
+        metricsTracker.count('Autofill.ProfileDeleted.Settings.Total', false));
+    assertEquals(
+        0, metricsTracker.count('Autofill.ProfileDeleted.Any.Account', true));
+    assertEquals(
+        1, metricsTracker.count('Autofill.ProfileDeleted.Any.Account', false));
+    assertEquals(
+        0, metricsTracker.count('Autofill.ProfileDeleted.Any.Total', true));
+    assertEquals(
+        1, metricsTracker.count('Autofill.ProfileDeleted.Any.Total', false));
+
+    const expected = new AutofillManagerExpectations();
+    expected.requestedAddresses = 1;
+    expected.listeningAddresses = 1;
+    expected.removeAddress = 0;
+    autofillManager.assertExpectations(expected);
+  });
+
+  test('verifyCountryIsSaved', async function() {
+    const address = createEmptyAddressEntry();
+    const dialog = await createAddressDialog(address);
+    const countrySelect = dialog.$.country;
+    assertTrue(!!countrySelect);
+    // The country should be pre-selected.
+    assertEquals('US', countrySelect.value);
+    countrySelect.value = 'GB';
+    countrySelect.dispatchEvent(new CustomEvent('change'));
+    flush();
+    assertEquals('GB', countrySelect.value);
+  });
+
+  test('verifyLanguageCodeIsSaved', async function() {
+    const address = createEmptyAddressEntry();
+    // TODO(crbug.com/403312087): Don't nest promise callbacks (here and
+    // everywhere else in this file). Use async/await instead. Check this
+    // comment for more info: crrev.com/c/6348920/comment/25b26a8a_d69cf940/
+    const dialog = await createAddressDialog(address);
+    const countrySelect = dialog.$.country;
+    assertTrue(!!countrySelect);
+    // The first country is pre-selected.
+    assertEquals('US', countrySelect.value);
+    assertEquals('en', address.languageCode);
+    countrySelect.value = 'IL';
+    countryDetailManager.setGetAddressFormatRepsonse(ADDRESS_COMPONENTS_IL);
+    countrySelect.dispatchEvent(new CustomEvent('change'));
+    flush();
+    await eventToPromise('on-update-address-wrapper', dialog);
+    assertEquals('IL', countrySelect.value);
+    assertEquals('iw', address.languageCode);
+  });
+
+  test('verifyPhoneAndEmailAreSaved', async () => {
+    const address = createEmptyAddressEntry();
+    const dialog = await createAddressDialog(address);
+    const rows = dialog.$.dialog.querySelectorAll('.address-row');
+    assertGT(rows.length, 0, 'dialog should contain address rows');
+
+    const lastRow = rows[rows.length - 1]!;
+    const phoneInput =
+        lastRow.querySelector<CrInputElement>('cr-input:nth-of-type(1)');
+    const emailInput =
+        lastRow.querySelector<CrInputElement>('cr-input:nth-of-type(2)');
+
+    assertTrue(!!phoneInput, 'phone element should be the first cr-input');
+    assertTrue(!!emailInput, 'email element should be the second cr-input');
+
+    assertEquals(undefined, phoneInput.value);
+    assertFalse(
+        !!getAddressFieldValue(address, FieldType.PHONE_HOME_WHOLE_NUMBER));
+
+    assertEquals(undefined, emailInput.value);
+    assertFalse(!!getAddressFieldValue(address, FieldType.EMAIL_ADDRESS));
+
+    const phoneNumber = '(555) 555-5555';
+    const emailAddress = 'no-reply@chromium.org';
+
+    phoneInput.value = phoneNumber;
+    emailInput.value = emailAddress;
+    await Promise.all([phoneInput.updateComplete, emailInput.updateComplete]);
+    await expectEvent(dialog, 'save-address', function() {
+      dialog.$.saveButton.click();
+    });
+    assertEquals(phoneNumber, phoneInput.value);
+    assertEquals(
+        phoneNumber,
+        getAddressFieldValue(address, FieldType.PHONE_HOME_WHOLE_NUMBER));
+
+    assertEquals(emailAddress, emailInput.value);
+    assertEquals(
+        emailAddress, getAddressFieldValue(address, FieldType.EMAIL_ADDRESS));
+  });
+
+  test('verifyPhoneAndEmailAreRemoved', async function() {
+    const address = createEmptyAddressEntry();
+
+    const phoneNumber = '(555) 555-5555';
+    const emailAddress = 'no-reply@chromium.org';
+
+    address.fields.push({
+      type: FieldType.ADDRESS_HOME_COUNTRY,
+      value: 'US',
+    });  // Set to allow save to be active.
+    address.fields.push({
+      type: FieldType.PHONE_HOME_WHOLE_NUMBER,
+      value: phoneNumber,
+    });
+    address.fields.push({type: FieldType.EMAIL_ADDRESS, value: emailAddress});
+
+    const dialog = await createAddressDialog(address);
+    const rows = dialog.$.dialog.querySelectorAll('.address-row');
+    assertGT(rows.length, 0, 'dialog should contain address rows');
+
+    const lastRow = rows[rows.length - 1]!;
+    const phoneInput =
+        lastRow.querySelector<CrInputElement>('cr-input:nth-of-type(1)');
+    const emailInput =
+        lastRow.querySelector<CrInputElement>('cr-input:nth-of-type(2)');
+
+    assertTrue(!!phoneInput, 'phone element should be the first cr-input');
+    assertTrue(!!emailInput, 'email element should be the second cr-input');
+
+    assertEquals(
+        phoneNumber, phoneInput.value,
+        'The input should have the corresponding address field value.');
+    assertEquals(
+        emailAddress, emailInput.value,
+        'The input should have the corresponding address field value.');
+
+    phoneInput.value = '';
+    emailInput.value = '';
+    await flushTasks();
+
+    await expectEvent(dialog, 'save-address', function() {
+      dialog.$.saveButton.click();
+    });
+    assertFalse(
+        !!getAddressFieldValue(address, FieldType.PHONE_HOME_WHOLE_NUMBER),
+        'The phone field should be empty.');
+    assertFalse(
+        !!getAddressFieldValue(address, FieldType.EMAIL_ADDRESS),
+        'The email field should be empty.');
+  });
+
+  // Test will set a value of 'foo' in each text field and verify that the
+  // save button is enabled, then it will clear the field and verify that the
+  // save button is disabled. Test passes after all elements have been tested.
+  test('verifySaveIsNotClickableIfAllInputFieldsAreEmpty', async function() {
+    const dialog = await createAddressDialog(createEmptyAddressEntry());
+    const saveButton = dialog.$.saveButton;
+    const testElements =
+        dialog.$.dialog.querySelectorAll<CrTextareaElement|CrInputElement>(
+            'cr-textarea, cr-input');
+
+    // The country can be preselected. Clear it to ensure the form is empty.
+    await expectEvent(dialog, 'on-update-can-save', function() {
+      const countrySelect = dialog.$.country;
+      assertTrue(!!countrySelect);
+      countrySelect.value = '';
+      countrySelect.dispatchEvent(new CustomEvent('change'));
+    });
+    assertEquals(
+        6, testElements.length,
+        'There should be 6 elements: The 4 fields from ' +
+            '`ADDRESS_COMPONENTS_US` + phone + email that are added ' +
+            'separately.');
+
+    assertTrue(saveButton.disabled);
+    for (const element of testElements) {
+      await expectEvent(dialog, 'on-update-can-save', function() {
+        element.value = 'foo';
+      });
+      assertFalse(saveButton.disabled);
+      await expectEvent(dialog, 'on-update-can-save', function() {
+        element.value = '';
+      });
+      assertTrue(saveButton.disabled);
+    }
+  });
+
+  // Setting the country should allow the address to be saved.
+  test('verifySaveIsNotClickableIfCountryNotSet', async function() {
+    function simulateCountryChange(countryCode: string) {
+      const countrySelect = dialog.$.country;
+      assertTrue(!!countrySelect);
+      countrySelect.value = countryCode;
+      countrySelect.dispatchEvent(new CustomEvent('change'));
+    }
+
+    const dialog = await createAddressDialog(createEmptyAddressEntry());
+    const countrySelect = dialog.$.country;
+    assertTrue(!!countrySelect);
+    // A country code is preselected.
+    assertFalse(dialog.$.saveButton.disabled);
+    assertEquals(countrySelect.value, 'US');
+
+    await expectEvent(
+        dialog, 'on-update-can-save', simulateCountryChange.bind(null, 'GB'));
+    assertFalse(dialog.$.saveButton.disabled);
+
+    await expectEvent(
+        dialog, 'on-update-can-save', simulateCountryChange.bind(null, ''));
+    assertTrue(dialog.$.saveButton.disabled);
+  });
+
+  // Test will timeout if save-address event is not fired.
+  test('verifyDefaultCountryIsAppliedWhenSaving', async function() {
+    const address = createEmptyAddressEntry();
+    address.fields.push({type: FieldType.NAME_FULL, value: 'Name'});
+    const dialog = await createAddressDialog(address);
+    await expectEvent(dialog, 'save-address', function() {
+      // Verify |countryCode| is not set.
+      assertEquals(
+          undefined,
+          getAddressFieldValue(address, FieldType.ADDRESS_HOME_COUNTRY));
+      dialog.$.saveButton.click();
+    });
+    // 'US' is the default country for these tests.
+    const countrySelect = dialog.$.country;
+    assertTrue(!!countrySelect);
+    assertEquals('US', countrySelect.value);
+  });
+
+  test(
+      'verifyNoSaveAddressEventWhenEditDialogCancelButtonIsClicked',
+      async function() {
+        const dialog = await createAddressDialog(createAddressEntry());
+
+        let saveFired = false;
+        eventToPromise('save-address', dialog).then(() => {
+          saveFired = true;
+        });
+
+        const cancelPromise = eventToPromise('cancel', dialog);
+        dialog.$.cancelButton.click();
+        await cancelPromise;
+
+        assertEquals(
+            1, metricsTracker.count('Autofill.Settings.EditAddress', false));
+
+        // Wait a bit to ensure save-address isn't fired.
+        await new Promise(resolve => window.setTimeout(resolve, 100));
+        assertFalse(saveFired);
+      });
+
+  test(
+      'verifyNoCancelEventWhenEditDialogSaveButtonIsClicked', async function() {
+        const dialog = await createAddressDialog(createAddressEntry());
+
+        let cancelFired = false;
+        eventToPromise('cancel', dialog).then(() => {
+          cancelFired = true;
+        });
+
+        const savePromise = eventToPromise('save-address', dialog);
+        dialog.$.saveButton.click();
+        await savePromise;
+
+        assertEquals(
+            1, metricsTracker.count('Autofill.Settings.EditAddress', true));
+
+        // Wait a bit to ensure cancel isn't fired.
+        await new Promise(resolve => window.setTimeout(resolve, 100));
+        assertFalse(cancelFired);
+      });
+
+  test('verifySyncRecordTypeNoticeForNewAddress', async () => {
+    const page = await createContactInfoPage([], {}, {
+      ...STUB_USER_ACCOUNT_INFO,
+      email: 'stub-user@example.com',
+      isSyncEnabledForAutofillProfiles: true,
+      isEligibleForAddressAccountStorage: false,
+    });
+
+    const dialog = await openAddressDialog(page);
+
+    assertTrue(
+        !isVisible(dialog.$.accountRecordTypeNotice),
+        'account notice should be invisible for non-account address');
+
+    document.body.removeChild(page);
+  });
+
+  test('verifyAccountRecordTypeNoticeForNewAddress', async () => {
+    const email = 'stub-user@example.com';
+    const page = await createContactInfoPage([], {}, {
+      ...STUB_USER_ACCOUNT_INFO,
+      email,
+      isSyncEnabledForAutofillProfiles: true,
+      isEligibleForAddressAccountStorage: true,
+    });
+
+    const dialog = await openAddressDialog(page);
+
+    assertTrue(
+        isVisible(dialog.$.accountRecordTypeNotice),
+        'account notice should be visible as the user is eligible');
+
+    assertEquals(
+        dialog.$.accountRecordTypeNotice.innerText,
+        page.i18n('newAccountAddressRecordTypeNotice', email));
+
+    document.body.removeChild(page);
+  });
+});
+
+suite('ContactInfoPageAddressLocaleTests', function() {
+  let countryDetailManager: TestCountryDetailManagerProxy;
+
+  setup(function() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+
+    countryDetailManager = new TestCountryDetailManagerProxy();
+    CountryDetailManagerProxyImpl.setInstance(countryDetailManager);
+
+    countryDetailManager.setGetCountryListRepsonse([
+      {name: 'United States', countryCode: 'US'},  // Default country.
+      {name: 'Israel', countryCode: 'IL'},
+      {name: 'United Kingdom', countryCode: 'GB'},
+    ]);
+    countryDetailManager.setGetAddressFormatRepsonse(ADDRESS_COMPONENTS_US);
+  });
+
+  // US address has 3 fields on the same line.
+  test('verifyEditingUSAddress', async function() {
+    const address = createEmptyAddressEntry();
+
+    address.fields = [
+      {type: FieldType.ADDRESS_HOME_COUNTRY, value: 'US'},
+      {type: FieldType.NAME_FULL, value: 'Name'},
+      {type: FieldType.ADDRESS_HOME_CITY, value: 'City'},
+      {type: FieldType.ADDRESS_HOME_STATE, value: 'State'},
+      {type: FieldType.ADDRESS_HOME_ZIP, value: 'ZIP code'},
+      {type: FieldType.PHONE_HOME_WHOLE_NUMBER, value: 'Phone'},
+      {type: FieldType.EMAIL_ADDRESS, value: 'Email'},
+    ];
+
+    const dialog = await createAddressDialog(address);
+    const rows = dialog.$.dialog.querySelectorAll('.address-row');
+    assertEquals(
+        4, rows.length,
+        'There should be 4 rows: Country, Name, City + State + Zip, ' +
+            'Phone + Email');
+
+    let index = 0;
+    // Country
+    let row = rows[index]!;
+    const countrySelect = row.querySelector('select');
+    assertTrue(!!countrySelect);
+    assertEquals(
+        'United States', countrySelect.selectedOptions[0]!.textContent.trim());
+    index++;
+    // Name
+    row = rows[index]!;
+    let cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(1, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.NAME_FULL), cols[0]!.value);
+    index++;
+    // City, State, ZIP code
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(3, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_CITY),
+        cols[0]!.value);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_STATE),
+        cols[1]!.value);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_ZIP),
+        cols[2]!.value);
+    index++;
+    // Phone, Email
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(2, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.PHONE_HOME_WHOLE_NUMBER),
+        cols[0]!.value);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.EMAIL_ADDRESS), cols[1]!.value);
+  });
+
+  // GB address has 1 field per line for all lines that change.
+  test('verifyEditingGBAddress', async function() {
+    const address = createEmptyAddressEntry();
+
+    address.fields = [
+      {type: FieldType.ADDRESS_HOME_COUNTRY, value: 'GB'},
+      {type: FieldType.NAME_FULL, value: 'Name'},
+      {type: FieldType.ADDRESS_HOME_CITY, value: 'Post town'},
+      {type: FieldType.ADDRESS_HOME_ZIP, value: 'Postal code'},
+      {type: FieldType.ADDRESS_HOME_STATE, value: 'County'},
+      {type: FieldType.PHONE_HOME_WHOLE_NUMBER, value: 'Phone'},
+      {type: FieldType.EMAIL_ADDRESS, value: 'Email'},
+    ];
+
+    countryDetailManager.setGetAddressFormatRepsonse(ADDRESS_COMPONENTS_GB);
+    const dialog = await createAddressDialog(address);
+    const rows = dialog.$.dialog.querySelectorAll('.address-row');
+    assertEquals(
+        6, rows.length,
+        'There should be 6 rows: Country, Name, City, Zip, State, ' +
+            'Phone + Email');
+
+    let index = 0;
+    // Country
+    let row = rows[index]!;
+    const countrySelect = row.querySelector('select');
+    assertTrue(!!countrySelect);
+    assertEquals(
+        'United Kingdom', countrySelect.selectedOptions[0]!.textContent.trim());
+    index++;
+    // Name
+    row = rows[index]!;
+    let cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(1, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.NAME_FULL), cols[0]!.value);
+    index++;
+    // Post Town
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(1, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_CITY),
+        cols[0]!.value);
+    index++;
+    // Postal code
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(1, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_ZIP),
+        cols[0]!.value);
+    index++;
+    // County
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(1, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_STATE),
+        cols[0]!.value);
+    index++;
+    // Phone, Email
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(2, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.PHONE_HOME_WHOLE_NUMBER),
+        cols[0]!.value);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.EMAIL_ADDRESS), cols[1]!.value);
+  });
+
+  // IL address has 2 fields on the same line and is an RTL locale.
+  // RTL locale shouldn't affect this test.
+  test('verifyEditingILAddress', async function() {
+    const address = createEmptyAddressEntry();
+    address.fields = [
+      {type: FieldType.ADDRESS_HOME_COUNTRY, value: 'IL'},
+      {type: FieldType.NAME_FULL, value: 'Name'},
+      {type: FieldType.ADDRESS_HOME_CITY, value: 'City'},
+      {type: FieldType.ADDRESS_HOME_ZIP, value: 'Postal code'},
+      {type: FieldType.PHONE_HOME_WHOLE_NUMBER, value: 'Phone'},
+      {type: FieldType.EMAIL_ADDRESS, value: 'Email'},
+    ];
+
+    countryDetailManager.setGetAddressFormatRepsonse(ADDRESS_COMPONENTS_IL);
+    const dialog = await createAddressDialog(address);
+    const rows = dialog.$.dialog.querySelectorAll('.address-row');
+    assertEquals(
+        4, rows.length,
+        'There should be 4 rows: Country, Name, City + Zip, Phone + Email');
+
+    let index = 0;
+    // Country
+    let row = rows[index]!;
+    const countrySelect = row.querySelector('select');
+    assertTrue(!!countrySelect);
+    assertEquals(
+        'Israel', countrySelect.selectedOptions[0]!.textContent.trim());
+    index++;
+    // Name
+    row = rows[index]!;
+    let cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(1, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.NAME_FULL)!, cols[0]!.value);
+    index++;
+    // City, Postal code
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(2, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_CITY),
+        cols[0]!.value);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_ZIP),
+        cols[1]!.value);
+    index++;
+    // Phone, Email
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(2, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.PHONE_HOME_WHOLE_NUMBER),
+        cols[0]!.value);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.EMAIL_ADDRESS), cols[1]!.value);
+  });
+
+  // Testing address edit dialog in an RTL layout by setting the document
+  // direction to 'rtl'. The phone number input should have direction=ltr and
+  // text-align=end.
+  test('verifyEditingILAddressWithRtlLayout', async function() {
+    document.documentElement.dir = 'rtl';
+    const address = createEmptyAddressEntry();
+    address.fields = [
+      {type: FieldType.ADDRESS_HOME_COUNTRY, value: 'IL'},
+      {type: FieldType.NAME_FULL, value: 'Name'},
+      {type: FieldType.ADDRESS_HOME_CITY, value: 'City'},
+      {type: FieldType.ADDRESS_HOME_ZIP, value: 'Postal code'},
+      {type: FieldType.PHONE_HOME_WHOLE_NUMBER, value: 'Phone'},
+      {type: FieldType.EMAIL_ADDRESS, value: 'Email'},
+    ];
+
+    countryDetailManager.setGetAddressFormatRepsonse(ADDRESS_COMPONENTS_IL);
+    const dialog = await createAddressDialog(address);
+    const rows = dialog.$.dialog.querySelectorAll('.address-row');
+    // There should be 4 rows: Country, Name, City + Zip, Phone + Email
+    assertEquals(4, rows.length);
+
+    let index = 0;
+    // Country
+    let row = rows[index]!;
+    const countrySelect = row.querySelector('select');
+    assertTrue(!!countrySelect);
+    assertEquals(
+        'Israel', countrySelect.selectedOptions[0]!.textContent.trim());
+    index++;
+    // Name
+    row = rows[index]!;
+    let cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(1, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.NAME_FULL)!, cols[0]!.value);
+    index++;
+    // City, Postal code
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(2, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_CITY),
+        cols[0]!.value);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.ADDRESS_HOME_ZIP),
+        cols[1]!.value);
+    index++;
+    // Phone, Email
+    row = rows[index]!;
+    cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(2, cols.length);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.PHONE_HOME_WHOLE_NUMBER),
+        cols[0]!.value);
+    assertTrue(cols[0]!.classList.contains('phone-number-input'));
+    const phoneInput = (cols[0]! as CrInputElement).inputElement;
+    assertEquals(
+        'ltr',
+        (phoneInput.computedStyleMap().get('direction') as CSSUnitValue).value);
+    assertEquals(
+        'end',
+        (phoneInput.computedStyleMap().get('text-align') as CSSUnitValue)
+            .value);
+    assertEquals(
+        getAddressFieldValue(address, FieldType.EMAIL_ADDRESS), cols[1]!.value);
+  });
+
+  // US has an extra field 'State'. Validate that this field is
+  // persisted when switching to IL then back to US.
+  test('verifyAddressPersistanceWhenSwitchingCountries', async function() {
+    const address = createEmptyAddressEntry();
+    address.fields.push({type: FieldType.ADDRESS_HOME_COUNTRY, value: 'US'});
+
+    const dialog = await createAddressDialog(address);
+    const city = 'Los Angeles';
+    const state = 'CA';
+    const zip = '90291';
+    const countrySelect = dialog.$.country;
+    assertTrue(!!countrySelect);
+
+    await expectEvent(dialog, 'on-update-address-wrapper', function() {
+      // US:
+      const rows = dialog.$.dialog.querySelectorAll('.address-row');
+      assertEquals(
+          4, rows.length,
+          'There should be 4 rows: Country, Name, City + State ' +
+              '+ Zip, Phone + Email');
+
+      // City, State, ZIP code
+      const row = rows[2]!;
+      const cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+          '.address-column');
+      assertEquals(3, cols.length);
+      cols[0]!.value = city;
+      cols[1]!.value = state;
+      cols[2]!.value = zip;
+
+      countryDetailManager.setGetAddressFormatRepsonse(ADDRESS_COMPONENTS_IL);
+      countrySelect.value = 'IL';
+      countrySelect.dispatchEvent(new CustomEvent('change'));
+    });
+
+    await expectEvent(dialog, 'on-update-address-wrapper', function() {
+      // IL:
+      const rows = dialog.$.dialog.querySelectorAll('.address-row');
+      assertEquals(
+          4, rows.length,
+          'There should be 4 rows: Country, Name, City + Zip, ' +
+              'Phone + Email');
+
+      // City, Postal code
+      const row = rows[2]!;
+      const cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+          '.address-column');
+      assertEquals(2, cols.length);
+      assertEquals(city, cols[0]!.value);
+      assertEquals(zip, cols[1]!.value);
+
+      countryDetailManager.setGetAddressFormatRepsonse(ADDRESS_COMPONENTS_US);
+      countrySelect.value = 'US';
+      countrySelect.dispatchEvent(new CustomEvent('change'));
+    });
+
+    // US:
+    const rows = dialog.$.dialog.querySelectorAll('.address-row');
+    assertEquals(
+        4, rows.length,
+        'There should be 4 rows: Country, Name, City + State + Zip, ' +
+            'Phone + Email');
+
+    // City, State, ZIP code
+    const row = rows[2]!;
+    const cols = row.querySelectorAll<CrTextareaElement|CrInputElement>(
+        '.address-column');
+    assertEquals(3, cols.length);
+    assertEquals(city, cols[0]!.value);
+    assertEquals(state, cols[1]!.value);
+    assertEquals(zip, cols[2]!.value);
+  });
+});

@@ -1,0 +1,8 @@
+specific_include_rules = {
+  "trust_token.*test.*": [
+    "+services/network/test",
+  ],
+  "dns_https_protocol_upgrade_browsertest.cc": [
+    "+services/network",
+  ],
+}

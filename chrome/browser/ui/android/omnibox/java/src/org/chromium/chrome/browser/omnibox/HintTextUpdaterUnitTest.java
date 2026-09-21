@@ -1,0 +1,543 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.omnibox;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import static org.chromium.ui.test.util.MockitoHelper.clearInvocations;
+
+import android.graphics.Paint;
+import android.graphics.drawable.Drawable;
+import android.text.Spanned;
+import android.text.style.ImageSpan;
+
+import androidx.test.core.app.ApplicationProvider;
+
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
+
+import org.chromium.base.Callback;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.omnibox.SearchEngineService.SearchEngineNameObserver;
+import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
+import org.chromium.components.contextual_search.InputState;
+import org.chromium.components.contextual_search.InputStateBuilder;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.omnibox.AutocompleteInput;
+import org.chromium.components.omnibox.AutocompleteInput.DisplayState;
+import org.chromium.components.omnibox.AutocompleteInput.SiteSearchData;
+import org.chromium.components.omnibox.AutocompleteRequestType;
+import org.chromium.components.omnibox.ToolConfigProto.ToolConfig;
+import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
+import org.chromium.url.GURL;
+
+/** Unit tests for {@link HintTextUpdater}. */
+@RunWith(BaseRobolectricTestRunner.class)
+public class HintTextUpdaterUnitTest {
+    private static final String AIM_ACTIVATION_HINT_TEXT = "Press tab then enter to ask AI Mode";
+    private static final String SEARCH_ENGINE_NAME = "Google";
+    private static final String SEARCH_ENGINE_HINT = "Search Google or type URL";
+
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
+
+    @Mock private LocationBarDataProvider mLocationBarDataProvider;
+    @Mock private SearchEngineService mSearchEngineService;
+    private final AutocompleteInput mAutocompleteInput = new AutocompleteInput();
+    @Mock private LocationBarEmbedderUiOverrides mEmbedderUiOverrides;
+    @Mock private Callback<CharSequence> mUpdateHintTextCallback;
+    @Mock private FuseboxSessionState mFuseboxSessionState;
+    @Mock private ComposeboxQueryControllerBridge mComposeboxQueryControllerBridge;
+    @Mock private FuseboxCoordinator mFuseboxCoordinator;
+    @Mock private Profile mProfile;
+    @Mock private Tracker mTracker;
+
+    private final SettableNonNullObservableSupplier<Integer> mFuseboxStateSupplier =
+            ObservableSuppliers.createNonNull(FuseboxState.DISABLED);
+    private final SettableNonNullObservableSupplier<Integer> mFuseboxLayoutModeSupplier =
+            ObservableSuppliers.createNonNull(FuseboxLayoutMode.TOOLBAR);
+    private final SettableNonNullObservableSupplier<Boolean> mActivationChipVisibilitySupplier =
+            ObservableSuppliers.createNonNull(false);
+    private final SettableNonNullObservableSupplier<Boolean> mActivationChipSelectedSupplier =
+            ObservableSuppliers.createNonNull(false);
+    private final SettableMonotonicObservableSupplier<Profile> mProfileSupplier =
+            ObservableSuppliers.createMonotonic();
+
+    @Captor private ArgumentCaptor<CharSequence> mHintTextCaptor;
+    @Captor private ArgumentCaptor<SearchEngineNameObserver> mSearchEngineNameObserverCaptor;
+
+    private final SettableMonotonicObservableSupplier<InputState> mInputStateSupplier =
+            ObservableSuppliers.createMonotonic();
+    private final SettableMonotonicObservableSupplier<SearchEngineService>
+            mSearchEngineServiceSupplier = ObservableSuppliers.createMonotonic();
+
+    private HintTextUpdater mUpdater;
+    private SearchEngineNameObserver mSearchEngineNameObserver;
+    private OmniboxResourceProvider mResourceProvider;
+
+    @Before
+    public void setUp() {
+        mAutocompleteInput.reset();
+        mAutocompleteInput.setDisplayState(DisplayState.DRAFTING);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setAutocompleteState(AutocompleteInput.AutocompleteState.ENABLED);
+        mAutocompleteInput.setPageUrl(GURL.emptyGURL());
+        mAutocompleteInput.setPageTitle("");
+        mAutocompleteInput.setUserText("");
+
+        lenient()
+                .when(mLocationBarDataProvider.getFuseboxSessionState())
+                .thenReturn(mFuseboxSessionState);
+        lenient().when(mFuseboxSessionState.getAutocompleteInput()).thenReturn(mAutocompleteInput);
+        lenient()
+                .when(mFuseboxCoordinator.getFuseboxStateSupplier())
+                .thenReturn(mFuseboxStateSupplier);
+        lenient()
+                .when(mFuseboxCoordinator.getFuseboxLayoutModeSupplier())
+                .thenReturn(mFuseboxLayoutModeSupplier);
+
+        FuseboxSessionState.setInstanceForTesting(mFuseboxSessionState);
+        mProfileSupplier.set(mProfile);
+        TrackerFactory.setTrackerForTests(mTracker);
+
+        var context = ApplicationProvider.getApplicationContext();
+        context.setTheme(R.style.Theme_BrowserUI_DayNight);
+        mResourceProvider = new OmniboxResourceProvider(context, BrandedColorScheme.APP_DEFAULT);
+        mUpdater =
+                new HintTextUpdater(
+                        mResourceProvider,
+                        mLocationBarDataProvider,
+                        mEmbedderUiOverrides,
+                        mSearchEngineServiceSupplier,
+                        mFuseboxCoordinator,
+                        mActivationChipVisibilitySupplier,
+                        mActivationChipSelectedSupplier,
+                        mProfileSupplier,
+                        mUpdateHintTextCallback);
+
+        lenient()
+                .when(mSearchEngineService.getOmniboxHintString())
+                .thenReturn("Search Google or type URL");
+        mSearchEngineServiceSupplier.set(mSearchEngineService);
+
+        verify(mSearchEngineService)
+                .addSearchEngineNameObserver(mSearchEngineNameObserverCaptor.capture());
+        mSearchEngineNameObserver = mSearchEngineNameObserverCaptor.getValue();
+
+        mUpdater.beginInput(mAutocompleteInput);
+        clearInvocations(mUpdateHintTextCallback);
+    }
+
+    private void assertHintText(String expected) {
+        verify(mUpdateHintTextCallback).onResult(mHintTextCaptor.capture());
+        assertEquals(expected, mHintTextCaptor.getValue().toString().trim());
+    }
+
+    private void setupAimActivationHintEligible() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(true);
+        mFuseboxStateSupplier.set(FuseboxState.COMPACT);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mActivationChipVisibilitySupplier.set(true);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+        mAutocompleteInput.setDisplayState(DisplayState.SUGGESTIONS);
+    }
+
+    private void setupAimActivationHintShowing() {
+        setupAimActivationHintEligible();
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+        assertHintText(AIM_ACTIVATION_HINT_TEXT);
+    }
+
+    @Test
+    public void testDefaultEnabledBehavior() {
+        when(mSearchEngineService.getSearchEngineName()).thenReturn("Google");
+
+        mSearchEngineNameObserver.onSearchEngineNameChanged();
+
+        verify(mUpdateHintTextCallback).onResult(mHintTextCaptor.capture());
+        assertEquals("Search Google or type URL", mHintTextCaptor.getValue());
+    }
+
+    @Test
+    public void testUpdateHintText_EmbedderControlledHint_DoesNotUpdate() {
+        when(mEmbedderUiOverrides.isEmbedderControlledHint()).thenReturn(true);
+
+        mSearchEngineNameObserver.onSearchEngineNameChanged();
+
+        verify(mUpdateHintTextCallback, never()).onResult(any());
+    }
+
+    @Test
+    public void testUpdateHintText_SiteSearchActive_HidesHintText() {
+        mAutocompleteInput.setSiteSearchData(new SiteSearchData("keyword", "Search keyword"));
+
+        verify(mUpdateHintTextCallback).onResult(eq(""));
+    }
+
+    @Test
+    public void testGetOmniboxHintText_ContextualTasks() {
+        GURL aiUrl = new GURL("chrome://contextual-tasks");
+        String aiTitle = "My AI Page";
+        mAutocompleteInput.setPageUrl(aiUrl);
+        mAutocompleteInput.setPageTitle(aiTitle);
+
+        mUpdater.onTitleChanged();
+
+        verify(mUpdateHintTextCallback).onResult(eq(aiTitle));
+    }
+
+    @Test
+    public void testGetOmniboxHintText_FuseboxSessionState() {
+        when(mSearchEngineService.getSearchEngineName()).thenReturn("Google");
+
+        String searchEngineHint = "Search Google or type URL";
+        String aiModeHint = "Ask anything";
+        String imageGenHint = "Image Gen Tool Hint";
+        String deepSearchHint = "Deep Search Tool Hint";
+        String canvasHint = "Canvas Tool Hint";
+
+        when(mFuseboxSessionState.getComposeboxQueryControllerBridge())
+                .thenReturn(mComposeboxQueryControllerBridge);
+        when(mComposeboxQueryControllerBridge.getInputStateSupplier())
+                .thenReturn(mInputStateSupplier);
+
+        ToolConfig aiModeConfig =
+                ToolConfig.newBuilder()
+                        .setToolValue(ToolMode.TOOL_MODE_UNSPECIFIED)
+                        .setHintText(aiModeHint)
+                        .build();
+        ToolConfig imageGenConfig =
+                ToolConfig.newBuilder()
+                        .setToolValue(ToolMode.TOOL_MODE_IMAGE_GEN)
+                        .setHintText(imageGenHint)
+                        .build();
+        ToolConfig deepSearchConfig =
+                ToolConfig.newBuilder()
+                        .setToolValue(ToolMode.TOOL_MODE_DEEP_SEARCH)
+                        .setHintText(deepSearchHint)
+                        .build();
+        ToolConfig canvasConfig =
+                ToolConfig.newBuilder()
+                        .setToolValue(ToolMode.TOOL_MODE_CANVAS)
+                        .setHintText(canvasHint)
+                        .build();
+        byte[][] toolConfigs =
+                new byte[][] {
+                    aiModeConfig.toByteArray(),
+                    imageGenConfig.toByteArray(),
+                    deepSearchConfig.toByteArray(),
+                    canvasConfig.toByteArray()
+                };
+        // Test InputState is null (supplier starts as null).
+        mUpdater.onTitleChanged();
+        verify(mUpdateHintTextCallback).onResult(eq(searchEngineHint));
+        clearInvocations(mUpdateHintTextCallback);
+
+        InputState inputState = new InputStateBuilder().withToolConfigs(toolConfigs).build();
+        mInputStateSupplier.set(inputState);
+
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.IMAGE_GENERATION);
+        verify(mUpdateHintTextCallback).onResult(eq(imageGenHint));
+
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.DEEP_SEARCH);
+        verify(mUpdateHintTextCallback).onResult(eq(deepSearchHint));
+
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.CANVAS);
+        verify(mUpdateHintTextCallback).onResult(eq(canvasHint));
+
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.AI_MODE);
+        verify(mUpdateHintTextCallback).onResult(eq(aiModeHint));
+
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.DEEP_SEARCH);
+        when(mFuseboxSessionState.getComposeboxQueryControllerBridge()).thenReturn(null);
+        mUpdater.onTitleChanged();
+        verify(mUpdateHintTextCallback).onResult(eq(searchEngineHint));
+        when(mFuseboxSessionState.getComposeboxQueryControllerBridge())
+                .thenReturn(mComposeboxQueryControllerBridge);
+
+        clearInvocations(mUpdateHintTextCallback);
+        InputState emptyHintState = new InputStateBuilder().withHintText("").build();
+        mInputStateSupplier.set(emptyHintState);
+        mUpdater.onTitleChanged();
+        verify(mUpdateHintTextCallback).onResult(eq(searchEngineHint));
+    }
+
+    @Test
+    public void testGetOmniboxHintText_noSessionStateFallback() {
+        when(mSearchEngineService.getSearchEngineName()).thenReturn("Google");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mSearchEngineNameObserver.onSearchEngineNameChanged();
+        verify(mUpdateHintTextCallback).onResult(eq("Search Google or type URL"));
+
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.AI_MODE);
+        verify(mUpdateHintTextCallback).onResult(eq("Ask anything"));
+
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.IMAGE_GENERATION);
+        verify(mUpdateHintTextCallback).onResult(eq("Describe your image"));
+    }
+
+    @Test
+    public void testGetOmniboxHintText_DefaultSearchEngine() {
+        when(mSearchEngineService.getSearchEngineName()).thenReturn("Google");
+        when(mSearchEngineService.getOmniboxHintString()).thenReturn("Search Google or type URL");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+        verify(mUpdateHintTextCallback).onResult(eq("Search Google or type URL"));
+
+        clearInvocations(mUpdateHintTextCallback);
+        when(mSearchEngineService.getSearchEngineName()).thenReturn("Yahoo");
+        when(mSearchEngineService.getOmniboxHintString()).thenReturn("Search Yahoo or type URL");
+        mSearchEngineNameObserver.onSearchEngineNameChanged();
+        verify(mUpdateHintTextCallback).onResult(eq("Search Yahoo or type URL"));
+    }
+
+    @Test
+    public void testAimActivationHint_ShowHint() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(true);
+        mFuseboxStateSupplier.set(FuseboxState.COMPACT);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mActivationChipVisibilitySupplier.set(true);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+
+        verify(mUpdateHintTextCallback).onResult(mHintTextCaptor.capture());
+        CharSequence hintText = mHintTextCaptor.getValue();
+        assertTrue(hintText.toString().contains("Press tab then enter to ask AI Mode"));
+
+        assertTrue(hintText instanceof Spanned);
+        Spanned spanned = (Spanned) hintText;
+        ImageSpan[] imageSpans = spanned.getSpans(0, spanned.length(), ImageSpan.class);
+        Drawable drawable = imageSpans[0].getDrawable();
+        assertNotNull(drawable);
+
+        // Verify dynamic sizing when measured with different Paint text sizes.
+        Paint paint = new Paint();
+        paint.setTextSize(20f);
+        imageSpans[0].getSize(paint, hintText, 0, spanned.length(), null);
+        assertEquals(20, drawable.getBounds().width());
+        assertEquals(20, drawable.getBounds().height());
+
+        paint.setTextSize(48f);
+        imageSpans[0].getSize(paint, hintText, 0, spanned.length(), null);
+        assertEquals(48, drawable.getBounds().width());
+        assertEquals(48, drawable.getBounds().height());
+    }
+
+    @Test
+    public void testAimActivationHint_ShowEmptyHintWhenTrackerSaysNo() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(false);
+        mFuseboxStateSupplier.set(FuseboxState.COMPACT);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mActivationChipVisibilitySupplier.set(true);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+
+        verify(mUpdateHintTextCallback).onResult(eq(""));
+    }
+
+    @Test
+    public void testAimActivationHint_FuseboxDisabled_showsHint() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(true);
+        mFuseboxStateSupplier.set(FuseboxState.DISABLED);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mActivationChipVisibilitySupplier.set(true);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+
+        verify(mUpdateHintTextCallback).onResult(mHintTextCaptor.capture());
+        assertTrue(
+                mHintTextCaptor
+                        .getValue()
+                        .toString()
+                        .contains("Press tab then enter to ask AI Mode"));
+    }
+
+    @Test
+    public void testAimActivationHint_FuseboxDisabled_showsEmptyHintWhenTrackerSaysNo() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(false);
+        mFuseboxStateSupplier.set(FuseboxState.DISABLED);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mActivationChipVisibilitySupplier.set(true);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+
+        verify(mUpdateHintTextCallback).onResult(eq(""));
+    }
+
+    @Test
+    public void testAimActivationHint_ResetsShownFlagOnEndInput() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT)).thenReturn(true);
+        mFuseboxStateSupplier.set(FuseboxState.COMPACT);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mActivationChipVisibilitySupplier.set(true);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+
+        mUpdater.onTitleChanged();
+        verify(mTracker).shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT);
+
+        mUpdater.onTitleChanged();
+        verify(mTracker).shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT);
+
+        mUpdater.endInput();
+        verify(mTracker).dismissed(FeatureConstants.AIM_ACTIVATION_HINT);
+        mUpdater.beginInput(mAutocompleteInput);
+        mUpdater.onTitleChanged();
+        verify(mTracker, times(2)).shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT);
+    }
+
+    @Test
+    public void testAimActivationHint_ChipSelectedClearsHint() {
+        setupAimActivationHintShowing();
+        verify(mTracker).shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT);
+
+        // Selecting the activation chip clears the hint text.
+        clearInvocations(mUpdateHintTextCallback, mTracker);
+        mActivationChipSelectedSupplier.set(true);
+        assertHintText("");
+        verify(mTracker, never()).dismissed(any());
+
+        // Deselecting the activation chip restores the hint without re-querying the tracker.
+        clearInvocations(mUpdateHintTextCallback, mTracker);
+        mActivationChipSelectedSupplier.set(false);
+        assertHintText(AIM_ACTIVATION_HINT_TEXT);
+        verify(mTracker, never()).shouldTriggerHelpUi(any());
+
+        // Ending input dismisses the tracker.
+        mUpdater.endInput();
+        verify(mTracker).dismissed(FeatureConstants.AIM_ACTIVATION_HINT);
+    }
+
+    @Test
+    public void testAimActivationHint_ChipSelectedInDrafting_ShowsDefaultHint() {
+        setupAimActivationHintEligible();
+        when(mSearchEngineService.getSearchEngineName()).thenReturn(SEARCH_ENGINE_NAME);
+        when(mSearchEngineService.getOmniboxHintString()).thenReturn(SEARCH_ENGINE_HINT);
+
+        // Selecting the activation chip in SUGGESTIONS clears the hint.
+        mActivationChipSelectedSupplier.set(true);
+        clearInvocations(mUpdateHintTextCallback);
+
+        // When suggestions collapse to DRAFTING, the default search hint is restored.
+        mAutocompleteInput.setDisplayState(DisplayState.DRAFTING);
+        assertHintText(SEARCH_ENGINE_HINT);
+
+        // When disengaged into DRAFTING_NO_FOCUS, the default search hint is also shown.
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setDisplayState(DisplayState.DRAFTING_NO_FOCUS);
+        assertHintText(SEARCH_ENGINE_HINT);
+
+        // When suggestions reopen, hint is cleared again.
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setDisplayState(DisplayState.SUGGESTIONS);
+        assertHintText("");
+    }
+
+    @Test
+    public void testAimActivationHint_ChipSelectedInDrafting_NonEmptyUserText_HidesHint() {
+        setupAimActivationHintEligible();
+        when(mSearchEngineService.getSearchEngineName()).thenReturn(SEARCH_ENGINE_NAME);
+        when(mSearchEngineService.getOmniboxHintString()).thenReturn(SEARCH_ENGINE_HINT);
+
+        mActivationChipSelectedSupplier.set(true);
+        mAutocompleteInput.setDisplayState(DisplayState.DRAFTING);
+        clearInvocations(mUpdateHintTextCallback);
+
+        mAutocompleteInput.setUserText("query");
+        assertHintText("");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setUserText("");
+        assertHintText(SEARCH_ENGINE_HINT);
+    }
+
+    @Test
+    public void testAimActivationHint_FallbackToDefaultIfChipNotVisible_toolbarMode() {
+        when(mSearchEngineService.getSearchEngineName()).thenReturn("Google");
+        mFuseboxStateSupplier.set(FuseboxState.COMPACT);
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.TOOLBAR);
+        mActivationChipVisibilitySupplier.set(false);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+        mAutocompleteInput.setUserText("");
+
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+
+        verify(mUpdateHintTextCallback).onResult(eq("Search Google or type URL"));
+    }
+
+    @Test
+    public void testSuggestionsPopover_ConventionalSearchFocused_RemovesHintText() {
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+
+        clearInvocations(mUpdateHintTextCallback);
+        mUpdater.onTitleChanged();
+
+        verify(mUpdateHintTextCallback).onResult(eq(""));
+    }
+
+    @Test
+    public void testSuggestionsPopover_DraftingNoFocus_ShowsHintText() {
+        mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        when(mSearchEngineService.getSearchEngineName()).thenReturn("Google");
+        mAutocompleteInput.setRequestType(AutocompleteRequestType.SEARCH);
+
+        clearInvocations(mUpdateHintTextCallback);
+        mAutocompleteInput.setDisplayState(DisplayState.DRAFTING_NO_FOCUS);
+
+        verify(mUpdateHintTextCallback).onResult(eq("Search Google or type URL"));
+    }
+}

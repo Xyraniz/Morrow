@@ -1,0 +1,211 @@
+// Copyright 2019 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef CHROME_UPDATER_WIN_UI_UI_H_
+#define CHROME_UPDATER_WIN_UI_UI_H_
+
+#include <windows.h>
+
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "base/memory/raw_ptr.h"
+#include "base/sequence_checker.h"
+#include "base/win/scoped_gdi_object.h"
+#include "chrome/updater/updater_scope.h"
+#include "chrome/updater/win/ui/message_loop.h"
+#include "chrome/updater/win/ui/owner_draw_controls.h"
+#include "chrome/updater/win/ui/resources/resources.grh"
+#include "chrome/updater/win/ui/ui_util.h"
+#include "chrome/updater/win/ui/window_impl.h"
+#include "ui/gfx/win/msg_util.h"
+
+namespace updater::ui {
+
+void EnableFlatButtons(HWND hwnd_parent);
+
+void HideWindowChildren(HWND hwnd_parent);
+
+class OmahaWndEvents {
+ public:
+  virtual ~OmahaWndEvents() = default;
+  virtual void DoClose() = 0;
+  virtual void DoExit() = 0;
+};
+
+// Implements the UI progress window.
+class OmahaWnd : public DialogImpl,
+                 public OwnerDrawTitleBar,
+                 public CustomDlgColors,
+                 public MessageFilter {
+ public:
+  const int IDD;
+
+  OmahaWnd(const OmahaWnd&) = delete;
+  OmahaWnd& operator=(const OmahaWnd&) = delete;
+  ~OmahaWnd() override;
+
+  virtual HRESULT Initialize();
+
+  // Overrides for MessageFilter.
+  BOOL PreTranslateMessage(MSG* msg) override;
+
+  void SetEventSink(OmahaWndEvents* ev) { events_sink_ = ev; }
+
+  void set_scope(UpdaterScope scope) { scope_ = scope; }
+  void set_bundle_name(const std::u16string& bundle_name) {
+    bundle_name_ = bundle_name;
+  }
+
+  virtual void Show();
+
+  CR_BEGIN_MSG_MAP_EX(OmahaWnd)
+    CR_MESSAGE_HANDLER_EX(WM_CLOSE, OnClose)
+    CR_MESSAGE_HANDLER_EX(WM_NCDESTROY, OnNCDestroy)
+    CR_MESSAGE_HANDLER_EX(WM_DPICHANGED, OnDpiChanged)
+    CR_MESSAGE_HANDLER_EX(WM_SYSCOLORCHANGE, OnThemeChanged)
+    CR_MESSAGE_HANDLER_EX(WM_SETTINGCHANGE, OnSettingChange)
+    CR_MESSAGE_HANDLER_EX(WM_THEMECHANGED, OnThemeChanged)
+    CR_MESSAGE_HANDLER_EX(WM_SETCURSOR, OnSetCursor)
+    CR_COMMAND_ID_HANDLER_EX(IDCANCEL, OnCancel)
+    CR_CHAIN_MSG_MAP(OwnerDrawTitleBar)
+    CR_CHAIN_MSG_MAP(CustomDlgColors)
+  CR_END_MSG_MAP()
+
+ protected:
+  struct ControlAttributes {
+    const bool is_ignore_entry = false;
+    const bool is_visible = false;
+    const bool is_enabled = false;
+    const bool is_button = false;
+    const bool is_default = false;
+  };
+
+  OmahaWnd(int dialog_id,
+           MessageLoop* message_loop,
+           HWND parent,
+           const std::wstring& lang);
+
+  // Message and command handlers.
+  LRESULT OnClose(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnNCDestroy(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnDpiChanged(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnSettingChange(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnThemeChanged(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnSetCursor(UINT msg, WPARAM wparam, LPARAM lparam);
+  void OnCancel(UINT notify_code, int id, HWND wnd_ctl);
+
+  virtual void ApplyDpiScaling(UINT dpi);
+
+  // Called after the cached theme flags were refreshed and before descendants
+  // are notified and the tree repaints. Subclasses drop and reload
+  // theme-dependent resources here.
+  virtual void OnThemeStateChanged() {}
+
+  void RepaintForThemeChange(bool notify_descendants,
+                             UINT msg,
+                             WPARAM wparam,
+                             LPARAM lparam);
+
+  // Returns true if the window is closed.
+  virtual bool MaybeCloseWindow() = 0;
+
+  // Returns true to indicate that the client continues handling OnComplete.
+  bool OnComplete();
+
+  HRESULT CloseWindow();
+  void InitializeDialog();
+
+  HRESULT EnableClose(bool enable);
+  HRESULT EnableSystemCloseButton(bool enable);
+
+  void SetControlAttributes(int control_id,
+                            const ControlAttributes& attributes);
+
+  // Updates or clears the window icon derived from the given bitmaps for
+  // ICON_BIG (typically taskbar / Alt+Tab) and ICON_SMALL (titlebar). Supports
+  // Windows hybrid theme mode where the taskbar and titlebar require different
+  // theme logos (e.g. light logo for taskbar and dark logo for titlebar).
+  void UpdateWindowIcon(HBITMAP big_bitmap,
+                        HBITMAP small_bitmap,
+                        UINT dpi = 0,
+                        std::optional<int> badge_resource_id = std::nullopt);
+
+  // Clears cached window icon state (logo bitmap handles, DPI, and badge ID) to
+  // prevent false cache hits if Windows GDI recycles handle values when bitmaps
+  // are destroyed and reallocated.
+  void ResetWindowIconCache();
+
+  void SetVisible(bool visible) {
+    ::ShowWindow(hwnd(), visible ? SW_SHOWNORMAL : SW_HIDE);
+  }
+
+  MessageLoop* message_loop() { return message_loop_; }
+  std::wstring lang() const { return lang_; }
+  bool is_complete() { return is_complete_; }
+  bool is_close_enabled() { return is_close_enabled_; }
+  UpdaterScope scope() { return scope_; }
+  const std::u16string& bundle_name() { return bundle_name_; }
+  HBITMAP current_logo_big_for_testing() const { return current_logo_big_; }
+  HBITMAP current_logo_small_for_testing() const {
+    return current_logo_small_;
+  }
+
+  static const ControlAttributes kVisibleTextAttributes;
+  static const ControlAttributes kDefaultActiveButtonAttributes;
+  static const ControlAttributes kDisabledButtonAttributes;
+  static const ControlAttributes kNonDefaultActiveButtonAttributes;
+  static const ControlAttributes kVisibleImageAttributes;
+  static const ControlAttributes kDisabledNonButtonAttributes;
+
+ private:
+  void MaybeRequestExitProcess();
+  void RequestExitProcess();
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+  raw_ptr<MessageLoop> message_loop_;
+  HWND parent_;
+  const std::wstring lang_;
+
+  bool is_complete_;
+  bool is_close_enabled_;
+
+  raw_ptr<OmahaWndEvents> events_sink_;
+
+  UpdaterScope scope_;
+  std::u16string bundle_name_;
+
+  // Handles to icons to show when ALT-TAB (big) and in taskbar/titlebar
+  // (small).
+  WindowIcons window_icons_;
+  HBITMAP current_logo_big_ = nullptr;
+  HBITMAP current_logo_small_ = nullptr;
+  UINT current_dpi_ = 0;
+
+  // The badge overlay that was actually composited onto `window_icons_`, not
+  // merely the one requested. It stays `std::nullopt` when badge loading or
+  // compositing fell back to an unbadged icon, so the next `UpdateWindowIcon()`
+  // with the same arguments misses the cache and retries the badge.
+  std::optional<int> current_badge_resource_id_ = std::nullopt;
+
+  base::win::ScopedGDIObject<HFONT> default_font_;
+  base::win::ScopedGDIObject<HFONT> header_font_;
+  base::win::ScopedGDIObject<HFONT> font_;
+
+  CustomProgressBarCtrl progress_bar_;
+
+  CR_MSG_MAP_CLASS_DECLARATIONS(OmahaWnd)
+};
+
+// Registers the specified common control classes from the common control DLL.
+// Calls are cumulative, meaning control_classes are added to existing classes.
+// UIs that use common controls should call this function to ensure that the UI
+// supports visual styles.
+HRESULT InitializeCommonControls(DWORD control_classes);
+
+}  // namespace updater::ui
+
+#endif  // CHROME_UPDATER_WIN_UI_UI_H_

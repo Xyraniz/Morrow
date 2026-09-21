@@ -1,0 +1,71 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+import {html} from '//resources/lit/v3_0/lit.rollup.js';
+
+import {SplitTabLayout} from './tab_search.mojom-webui.js';
+import type {TabSearchSplitItemElement} from './tab_search_split_item.js';
+
+export function getHtml(this: TabSearchSplitItemElement) {
+  // clang-format off
+  return html`<!--_html_template_start_-->
+<div id="iconContainer">
+  <div
+      class="split-favicons ${
+          this.data.layout === SplitTabLayout.kStacked ? 'stacked' :
+                                                         'side-by-side'}">
+    ${this.data.tabUrls.slice(0, 2).map((url: string, index: number) => html`
+      <div class="split-favicon"
+          .style="background-image: ${this.getFaviconUrl_(url, index)}">
+      </div>
+    `)}
+  </div>
+</div>
+<div class="text-container" aria-hidden="true">
+  <div id="primaryContainer">
+    <div id="primaryText" title="${this.data.title}">${this.data.title}</div>
+    ${this.data.tabs ? html`
+      ${this.data.tabs.map(item => html`
+        ${this.hasMediaAlertForTab_(item) ? html`
+          <img
+              class="media-alert
+              ${this.getMediaAlertImageClassForTab_(item)}">
+        ` : ''}
+      `)}
+    ` : ''}
+  </div>
+  <div id="secondaryTextContainer">
+    <tab-group-dot id="groupDot" ?hidden="${!this.data.tabGroup}"
+        .color="${this.data.tabGroup?.color ?? 0}">
+    </tab-group-dot>
+    ${this.domainTexts_.slice(0, 2).map((domainText, index) => html`
+      ${index > 0 ? html`
+        <div class="separator">•</div>
+      ` : ''}
+      <div class="domain-text" title="${domainText}">
+        <bdi>${domainText}</bdi>
+      </div>
+    `)}
+    <div class="separator">•</div>
+    <div id="timestamp">${this.data.lastActiveElapsedText}</div>
+  </div>
+</div>
+${this.isCloseable_() ? html`
+  <div class="button-container">
+    <cr-icon-button id="closeButton" role="button"
+        aria-label="${this.tooltipForButton_()}"
+        iron-icon="${this.closeButtonIcon}" ?noink="${!this.buttonRipples_}"
+        no-ripple-on-focus @click="${this.onCloseButtonClick_}"
+        title="${this.tooltipForButton_()}" @focus="${this.onCloseButtonFocus_}"
+        @blur="${this.onCloseButtonBlur_}">
+    </cr-icon-button>
+    <cr-tooltip for="closeButton" position="top" offset="0"
+        fit-to-visible-bounds manual-mode>
+      ${this.tooltipForButton_()}
+    </cr-tooltip>
+  </div>
+` : ''}
+<!--_html_template_end_-->`;
+  // clang-format on
+}

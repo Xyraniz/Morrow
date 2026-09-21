@@ -1,0 +1,501 @@
+// Copyright 2015 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "third_party/blink/renderer/platform/image-decoders/bmp/bmp_image_decoder.h"
+
+#include <stdint.h>
+
+#include <memory>
+#include <string>
+
+#include "base/containers/span.h"
+#include "base/containers/span_writer.h"
+#include "base/strings/stringprintf.h"
+#include "build/build_config.h"
+#include "build/buildflag.h"
+#include "build/chromecast_buildflags.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/platform/image-decoders/bmp/bmp_decoder_factory.h"
+#include "third_party/blink/renderer/platform/image-decoders/image_decoder_base_test.h"
+#include "third_party/blink/renderer/platform/image-decoders/image_decoder_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
+#include "third_party/skia/include/core/SkAlphaType.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkColor.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || \
+    (BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CASTOS))
+// GN deps checking doesn't understand #if guards, so we need to use nogncheck
+// here: https://gn.googlesource.com/gn/+/main/docs/reference.md#nogncheck
+#include "ui/base/test/skia_gold_matching_algorithm.h"  // nogncheck
+#include "ui/base/test/skia_gold_pixel_diff.h"          // nogncheck
+#endif
+
+namespace blink {
+
+namespace {
+
+std::unique_ptr<ImageDecoder> CreateBMPDecoder() {
+  return CreateBmpImageDecoder(
+      ImageDecoder::kAlphaNotPremultiplied, ImageDecoder::kDefaultBitDepth,
+      ColorBehavior::kTransformToSRGB, ImageDecoder::kNoDecodedImageByteLimit);
+}
+
+Vector<uint8_t> MakeBmpWithTruncatedIccProfile() {
+  Vector<uint8_t> data(138);
+  auto writer = base::SpanWriter(base::span(data));
+  CHECK(writer.WriteU8LittleEndian('B'));
+  CHECK(writer.WriteU8LittleEndian('M'));
+  CHECK(writer.WriteU32LittleEndian(138));
+  CHECK(writer.Skip(4u));
+  CHECK(writer.WriteU32LittleEndian(138));
+  CHECK(writer.WriteU32LittleEndian(124));
+  CHECK(writer.WriteI32LittleEndian(1));
+  CHECK(writer.WriteI32LittleEndian(1));
+  CHECK(writer.WriteU16LittleEndian(1));
+  CHECK(writer.WriteU16LittleEndian(32));
+  CHECK(writer.Skip(40u));
+  CHECK(writer.WriteU32LittleEndian(0x4D424544));  // "MBED"
+  CHECK(writer.Skip(52u));
+  CHECK(writer.WriteU32LittleEndian(0x90));
+  CHECK(writer.WriteU32LittleEndian(UINT32_MAX));
+  return data;
+}
+
+Vector<uint8_t> MakeRle4Bmp(int32_t width, base::span<const uint8_t> rle_data) {
+  constexpr uint32_t kPixelDataOffset = 62;
+  Vector<uint8_t> data(kPixelDataOffset + rle_data.size());
+  auto writer = base::SpanWriter(base::span(data));
+  CHECK(writer.WriteU8LittleEndian('B'));
+  CHECK(writer.WriteU8LittleEndian('M'));
+  CHECK(writer.WriteU32LittleEndian(static_cast<uint32_t>(data.size())));
+  CHECK(writer.Skip(4u));
+  CHECK(writer.WriteU32LittleEndian(kPixelDataOffset));
+  CHECK(writer.WriteU32LittleEndian(40));
+  CHECK(writer.WriteI32LittleEndian(width));
+  CHECK(writer.WriteI32LittleEndian(1));
+  CHECK(writer.WriteU16LittleEndian(1));
+  CHECK(writer.WriteU16LittleEndian(4));
+  CHECK(writer.WriteU32LittleEndian(2));
+  CHECK(writer.WriteU32LittleEndian(static_cast<uint32_t>(rle_data.size())));
+  CHECK(writer.Skip(8u));
+  CHECK(writer.WriteU32LittleEndian(2));
+  CHECK(writer.Skip(4u));
+  CHECK(writer.WriteU32LittleEndian(0x00000000));
+  CHECK(writer.WriteU32LittleEndian(0x00FF0000));
+  CHECK(writer.Write(rle_data));
+  return data;
+}
+
+}  // anonymous namespace
+
+TEST(BMPImageDecoderTest, isSizeAvailable) {
+  // This image is 256x256.
+  static constexpr char kBmpFile[] = "/images/resources/gracehopper.bmp";
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(kBmpFile);
+  ASSERT_TRUE(data.get());
+
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  decoder->SetData(data.get(), true);
+  EXPECT_TRUE(decoder->IsSizeAvailable());
+  EXPECT_EQ(256, decoder->Size().width());
+  EXPECT_EQ(256, decoder->Size().height());
+}
+
+TEST(BMPImageDecoderTest, parseAndDecode) {
+  // This image is 256x256.
+  static constexpr char kBmpFile[] = "/images/resources/gracehopper.bmp";
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(kBmpFile);
+  ASSERT_TRUE(data.get());
+
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  decoder->SetData(data.get(), true);
+
+  ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  EXPECT_EQ(ImageFrame::kFrameComplete, frame->GetStatus());
+  EXPECT_EQ(256, frame->Bitmap().width());
+  EXPECT_EQ(256, frame->Bitmap().height());
+  EXPECT_FALSE(decoder->Failed());
+}
+
+// Verify that tiny complete BMPs decode successfully. These inputs exercise the
+// small complete-data path in the Rust decoder.
+TEST(BMPImageDecoderTest, tinyCompleteBMPsDecode) {
+  struct TestCase {
+    const char* path;
+    SkColor expected_color;
+  };
+  static constexpr TestCase kTestCases[] = {
+      {"/images/resources/tiny-24bit-1x1.bmp", SkColorSetRGB(0, 0, 0)},
+      {"/images/resources/tiny-pal4-1x1.bmp", SkColorSetRGB(0, 0, 0)},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.path);
+    scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(test_case.path);
+    ASSERT_TRUE(data.get());
+
+    std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+    decoder->SetData(data.get(), true);
+    EXPECT_TRUE(decoder->IsSizeAvailable());
+    EXPECT_EQ(1, decoder->Size().width());
+    EXPECT_EQ(1, decoder->Size().height());
+
+    ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
+    ASSERT_TRUE(frame);
+    EXPECT_EQ(ImageFrame::kFrameComplete, frame->GetStatus());
+    EXPECT_FALSE(decoder->Failed());
+    EXPECT_EQ(test_case.expected_color, frame->Bitmap().getColor(0, 0));
+  }
+}
+
+// Verify that tiny partial BMPs stay on the streaming path until the rest of
+// the data arrives.
+TEST(BMPImageDecoderTest, tinyPartialBMPStaysStreamingUntilComplete) {
+  scoped_refptr<SharedBuffer> full_data =
+      ReadFileToSharedBuffer("/images/resources/tiny-24bit-1x1.bmp");
+  ASSERT_TRUE(full_data.get());
+
+  constexpr size_t kBmpHeaderSize = 54;
+  Vector<char> full_data_vec = full_data->CopyAs<Vector<char>>();
+  ASSERT_GT(full_data_vec.size(), kBmpHeaderSize);
+
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  scoped_refptr<SharedBuffer> partial_data =
+      SharedBuffer::Create(base::span(full_data_vec).first(kBmpHeaderSize));
+  decoder->SetData(partial_data.get(), false);
+
+  EXPECT_TRUE(decoder->IsSizeAvailable());
+  EXPECT_EQ(1, decoder->Size().width());
+  EXPECT_EQ(1, decoder->Size().height());
+
+  ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  EXPECT_NE(ImageFrame::kFrameComplete, frame->GetStatus());
+  EXPECT_FALSE(decoder->Failed());
+
+  decoder->SetData(full_data.get(), true);
+  frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  EXPECT_EQ(ImageFrame::kFrameComplete, frame->GetStatus());
+  EXPECT_FALSE(decoder->Failed());
+  EXPECT_EQ(SkColorSetRGB(0, 0, 0), frame->Bitmap().getColor(0, 0));
+}
+
+// Test if a BMP decoder returns a proper error while decoding an empty image.
+TEST(BMPImageDecoderTest, emptyImage) {
+  static constexpr char kBmpFile[] = "/images/resources/0x0.bmp";  // 0x0
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(kBmpFile);
+  ASSERT_TRUE(data.get());
+
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  decoder->SetData(data.get(), true);
+
+  // SkBmpRustCodec decoder returns decoder error with no frame created for
+  // empty image.
+  ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_FALSE(frame);
+
+  EXPECT_TRUE(decoder->Failed());
+}
+
+TEST(BMPImageDecoderTest, int32MinHeight) {
+  static constexpr char kBmpFile[] =
+      "/images/resources/1xint32_min.bmp";  // 0xINT32_MIN
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(kBmpFile);
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  // Test when not all data is received.
+  decoder->SetData(data.get(), false);
+  EXPECT_FALSE(decoder->IsSizeAvailable());
+  EXPECT_TRUE(decoder->Failed());
+}
+
+// Verify that decoding this image does not crash.
+TEST(BMPImageDecoderTest, crbug752898) {
+  static constexpr char kBmpFile[] = "/images/resources/crbug752898.bmp";
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(kBmpFile);
+  ASSERT_TRUE(data.get());
+
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  decoder->SetData(data.get(), true);
+  decoder->DecodeFrameBufferAtIndex(0);
+}
+
+// Verify that decoding this image does not crash.
+TEST(BMPImageDecoderTest, invalidBitmapOffset) {
+  static constexpr char kBmpFile[] =
+      "/images/resources/invalid-bitmap-offset.bmp";
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(kBmpFile);
+  ASSERT_TRUE(data.get());
+
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  decoder->SetData(data.get(), true);
+  decoder->DecodeFrameBufferAtIndex(0);
+  EXPECT_TRUE(decoder->Failed());
+}
+
+// Verify that decoding an image with an unnecessary EOF marker does not crash.
+TEST(BMPImageDecoderTest, allowEOFWhenPastEndOfImage) {
+  static constexpr char kBmpFile[] = "/images/resources/unnecessary-eof.bmp";
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(kBmpFile);
+  ASSERT_TRUE(data.get());
+
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  decoder->SetData(data.get(), true);
+  ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
+  EXPECT_EQ(ImageFrame::kFrameComplete, frame->GetStatus());
+  EXPECT_FALSE(decoder->Failed());
+}
+
+TEST(BMPImageDecoderTest, Rle4EncodedRunClipsAtRowBoundary) {
+  static constexpr uint8_t kRleData[] = {
+      2, 0x10,  // Two-pixel run overflows the one-pixel row.
+      0, 1};
+  Vector<uint8_t> bmp_data = MakeRle4Bmp(1, kRleData);
+  scoped_refptr<SharedBuffer> data = SharedBuffer::Create(base::span(bmp_data));
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  decoder->SetData(data.get(), true);
+
+  ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  EXPECT_EQ(ImageFrame::kFrameComplete, frame->GetStatus());
+  EXPECT_FALSE(decoder->Failed());
+  EXPECT_EQ(SK_ColorRED, frame->Bitmap().getColor(0, 0));
+}
+
+TEST(BMPImageDecoderTest, RejectsTruncatedIccProfileBeforeAllocation) {
+  std::unique_ptr<ImageDecoder> decoder = std::make_unique<BMPImageDecoder>(
+      ImageDecoder::kAlphaNotPremultiplied, ColorBehavior::kTransformToSRGB,
+      ImageDecoder::kNoDecodedImageByteLimit);
+  Vector<uint8_t> bmp_data = MakeBmpWithTruncatedIccProfile();
+  scoped_refptr<SharedBuffer> data = SharedBuffer::Create(base::span(bmp_data));
+  decoder->SetData(data.get(), true);
+
+  EXPECT_FALSE(decoder->DecodeFrameBufferAtIndex(0));
+  EXPECT_TRUE(decoder->Failed());
+}
+
+class BMPSuiteEntry {
+ public:
+  // `entry_dir` and `entry_bmp` are primarily used to locate the input test
+  // file (and also to construct Skia Gold test name) - the file will be read
+  // from:
+  // `third_party/blink/web_tests/images/bmp-suite/<entry_dir>/<entry_bmp>.bmp`
+  //
+  // `revision` is a Skia Gold revision number, which needs to be increased
+  // every time test expectations change - see also documentation of
+  // `PositiveIfOnlyImageAlgorithm` used by `BMPImageDecoderTest`:
+  // https://source.chromium.org/chromium/chromium/src/+/main:ui/base/test/skia_gold_matching_algorithm.h;l=97-133;drc=31a129ff9b513950f7f96f7fba885e8341f52158
+  BMPSuiteEntry(std::string entry_dir,
+                std::string entry_bmp,
+                std::string revision = "rev0")
+      : entry_dir_(std::move(entry_dir)),
+        entry_bmp_(std::move(entry_bmp)),
+        revision_(std::move(revision)) {}
+
+  const std::string& entry_dir() const { return entry_dir_; }
+  const std::string& entry_bmp() const { return entry_bmp_; }
+  const std::string& revision() const { return revision_; }
+
+ private:
+  std::string entry_dir_;
+  std::string entry_bmp_;
+  std::string revision_;
+};
+
+class BMPImageDecoderSuiteTest : public testing::TestWithParam<BMPSuiteEntry> {
+};
+
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_VerifyBMPSuiteImage DISABLED_VerifyBMPSuiteImage
+#else
+#define MAYBE_VerifyBMPSuiteImage VerifyBMPSuiteImage
+#endif
+// TODO crbug.com/422362214): Re-enable once flakiness is addressed.
+TEST_P(BMPImageDecoderSuiteTest, MAYBE_VerifyBMPSuiteImage) {
+  // Load the BMP file under test.
+  const BMPSuiteEntry& entry = GetParam();
+  std::string bmp_path =
+      base::StringPrintf("/images/bmp-suite/%s/%s.bmp",
+                         entry.entry_dir().c_str(), entry.entry_bmp().c_str());
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(bmp_path.c_str());
+  ASSERT_NE(data.get(), nullptr) << "unable to load '" << bmp_path << "'";
+  ASSERT_FALSE(data->empty());
+
+  std::unique_ptr<ImageDecoder> decoder = CreateBMPDecoder();
+  decoder->SetData(data, /*all_data_received=*/true);
+  ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
+
+  // Some entries in BMP Suite are intentionally invalid. These could draw
+  // nonsense, or generate an error. We only need to verify that they don't
+  // crash, and treat them as if they generated a 1x1 transparent bitmap.
+  [[maybe_unused]] const SkBitmap* result_image;
+  SkBitmap empty_bitmap;
+  if (frame && frame->GetStatus() == ImageFrame::kFrameComplete) {
+    EXPECT_FALSE(decoder->Failed());
+    result_image = &frame->Bitmap();
+  } else {
+    // Images in the "good" directory should always decode successfully.
+    EXPECT_NE(entry.entry_dir(), "good");
+    // Represent failures as a 1x1 transparent black pixel in Skia Gold.
+    EXPECT_TRUE(decoder->Failed());
+    empty_bitmap.allocPixels(SkImageInfo::MakeN32(1, 1, kPremul_SkAlphaType));
+    empty_bitmap.eraseColor(SK_ColorTRANSPARENT);
+    result_image = &empty_bitmap;
+  }
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || \
+    (BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CASTOS))
+  // Verify image contents via go/chrome-engprod-skia-gold on platforms where
+  // it is properly supported. On other platforms, decoding without a crash
+  // counts as a pass.
+  raw_ptr<ui::test::SkiaGoldPixelDiff> skia_gold =
+      ui::test::SkiaGoldPixelDiff::GetSession();
+  ui::test::PositiveIfOnlyImageAlgorithm positive_if_exact_image_only;
+  std::string golden_name = ui::test::SkiaGoldPixelDiff::GetGoldenImageName(
+      "BMPImageDecoderTest", "VerifyBMPSuite",
+      base::StringPrintf("%s_%s.%s", entry.entry_dir().c_str(),
+                         entry.entry_bmp().c_str(), entry.revision().c_str()));
+  EXPECT_TRUE(skia_gold->CompareScreenshot(golden_name, *result_image,
+                                           &positive_if_exact_image_only))
+      << bmp_path;
+#endif
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    BMPSuite,
+    BMPImageDecoderSuiteTest,
+    testing::Values(
+        BMPSuiteEntry{"good", "pal1"},
+        BMPSuiteEntry{"good", "pal1wb"},
+        BMPSuiteEntry{"good", "pal1bg"},
+        BMPSuiteEntry{"good", "pal4"},
+        BMPSuiteEntry{"good", "pal4gs"},
+        BMPSuiteEntry{"good", "pal4rle"},
+        BMPSuiteEntry{"good", "pal8"},
+        BMPSuiteEntry{"good", "pal8-0"},
+        BMPSuiteEntry{"good", "pal8gs"},
+        BMPSuiteEntry{"good", "pal8rle"},
+        BMPSuiteEntry{"good", "pal8w126"},
+        BMPSuiteEntry{"good", "pal8w125"},
+        BMPSuiteEntry{"good", "pal8w124"},
+        BMPSuiteEntry{"good", "pal8topdown"},
+        BMPSuiteEntry{"good", "pal8nonsquare"},
+        BMPSuiteEntry{"good", "pal8os2"},
+        BMPSuiteEntry{"good", "pal8v4", "rev1"},
+        BMPSuiteEntry{"good", "pal8v5"},
+        BMPSuiteEntry{"good", "rgb16"},
+        BMPSuiteEntry{"good", "rgb16bfdef"},
+        BMPSuiteEntry{"good", "rgb16-565"},
+        BMPSuiteEntry{"good", "rgb16-565pal"},
+        BMPSuiteEntry{"good", "rgb24"},
+        BMPSuiteEntry{"good", "rgb24pal"},
+        BMPSuiteEntry{"good", "rgb32"},
+        BMPSuiteEntry{"good", "rgb32bfdef"},
+        BMPSuiteEntry{"good", "rgb32bf"},
+
+        BMPSuiteEntry{"questionable", "pal1p1"},
+        BMPSuiteEntry{"questionable", "pal2"},
+        BMPSuiteEntry{"questionable", "pal2color"},
+        BMPSuiteEntry{"questionable", "pal4rletrns", "rev1"},
+        BMPSuiteEntry{"questionable", "pal4rlecut", "rev1"},
+        BMPSuiteEntry{"questionable", "pal8rletrns", "rev1"},
+        BMPSuiteEntry{"questionable", "pal8rlecut", "rev1"},
+        BMPSuiteEntry{"questionable", "pal8offs"},
+        BMPSuiteEntry{"questionable", "pal8oversizepal"},
+        BMPSuiteEntry{"questionable", "pal8os2-sz"},
+        BMPSuiteEntry{"questionable", "pal8os2-hs"},
+        BMPSuiteEntry{"questionable", "pal8os2sp"},
+        BMPSuiteEntry{"questionable", "pal8os2v2"},
+        BMPSuiteEntry{"questionable", "pal8os2v2-16"},
+        BMPSuiteEntry{"questionable", "pal8os2v2-sz"},
+        BMPSuiteEntry{"questionable", "pal8os2v2-40sz"},
+        BMPSuiteEntry{"questionable", "rgb24rle24"},
+        BMPSuiteEntry{"questionable", "pal1huffmsb"},  // Unsupported encoding.
+        BMPSuiteEntry{"questionable", "rgb16faketrns"},
+        BMPSuiteEntry{"questionable", "rgb16-231"},
+        BMPSuiteEntry{"questionable", "rgb16-3103"},
+        BMPSuiteEntry{"questionable", "rgba16-4444"},
+        BMPSuiteEntry{"questionable", "rgba16-5551"},
+        BMPSuiteEntry{"questionable", "rgba16-1924"},
+        BMPSuiteEntry{"questionable", "rgb24largepal"},
+        //           {"questionable", "rgb24prof"},  Omitted--not public
+        //           domain.
+        //           {"questionable", "rgb24prof2"},    "       "    " "
+        //           {"questionable", "rgb24lprof"},    "       "    " "
+        BMPSuiteEntry{"questionable", "rgb24jpeg", "rev1"},
+        BMPSuiteEntry{"questionable", "rgb24png", "rev1"},
+        BMPSuiteEntry{"questionable", "rgb32h52"},
+        BMPSuiteEntry{"questionable", "rgb32-xbgr"},
+        BMPSuiteEntry{"questionable", "rgb32fakealpha"},
+        BMPSuiteEntry{"questionable", "rgb32-111110"},
+        BMPSuiteEntry{"questionable", "rgb32-7187"},
+        BMPSuiteEntry{"questionable", "rgba32-1"},
+        BMPSuiteEntry{"questionable", "rgba32-1010102"},
+        BMPSuiteEntry{"questionable", "rgba32-81284"},
+        BMPSuiteEntry{"questionable", "rgba32-61754"},
+        BMPSuiteEntry{"questionable", "rgba32abf"},
+        BMPSuiteEntry{"questionable", "rgba32h56"},
+        // TODO: crbug.com/40244265 - a bitcount of 64 is not yet supported.
+        BMPSuiteEntry{"questionable", "rgba64"},
+        // Regression test: BITMAPV5HEADER with alpha_mask under BI_RGB.
+        BMPSuiteEntry{"questionable", "rgba32-v5-alpha"},
+
+        BMPSuiteEntry{"bad", "badbitcount"},
+        BMPSuiteEntry{"bad", "badbitssize"},
+        BMPSuiteEntry{"bad", "baddens1"},
+        BMPSuiteEntry{"bad", "baddens2"},
+        BMPSuiteEntry{"bad", "badfilesize"},
+        BMPSuiteEntry{"bad", "badheadersize"},
+        BMPSuiteEntry{"bad", "badpalettesize"},
+        BMPSuiteEntry{"bad", "badplanes"},
+        BMPSuiteEntry{"bad", "badrle", "rev1"},
+        BMPSuiteEntry{"bad", "badrle4", "rev1"},
+        BMPSuiteEntry{"bad", "badrle4bis", "rev1"},
+        BMPSuiteEntry{"bad", "badrle4ter", "rev1"},
+        BMPSuiteEntry{"bad", "badrlebis", "rev1"},
+        BMPSuiteEntry{"bad", "badrleter", "rev1"},
+        BMPSuiteEntry{"bad", "badwidth"},
+        BMPSuiteEntry{"bad", "pal8badindex"},
+        BMPSuiteEntry{"bad", "reallybig"},
+        BMPSuiteEntry{"bad", "rgb16-880"},
+        BMPSuiteEntry{"bad", "rletopdown"},
+        BMPSuiteEntry{"bad", "rletopdown"},
+        BMPSuiteEntry{"bad", "shortfile"}));
+
+class BMPImageDecoderCorpusTest : public ImageDecoderBaseTest {
+ public:
+  BMPImageDecoderCorpusTest() : ImageDecoderBaseTest("bmp") {}
+
+ protected:
+  std::unique_ptr<ImageDecoder> CreateImageDecoder() const override {
+    return std::make_unique<BMPImageDecoder>(
+        ImageDecoder::kAlphaPremultiplied, ColorBehavior::kTransformToSRGB,
+        ImageDecoder::kNoDecodedImageByteLimit);
+  }
+
+  // The BMPImageDecoderCorpusTest tests are really slow under Valgrind.
+  // Thus it is split into fast and slow versions. The threshold is
+  // set to 10KB because the fast test can finish under Valgrind in
+  // less than 30 seconds.
+  static const int64_t kThresholdSize = 10240;
+};
+
+TEST_F(BMPImageDecoderCorpusTest, DecodingFast) {
+  TestDecoding(FileSelection::kSmaller, kThresholdSize);
+}
+
+#if defined(THREAD_SANITIZER)
+// BMPImageDecoderCorpusTest.DecodingSlow always times out under ThreadSanitizer
+// v2.
+#define MAYBE_DecodingSlow DISABLED_DecodingSlow
+#else
+#define MAYBE_DecodingSlow DecodingSlow
+#endif
+TEST_F(BMPImageDecoderCorpusTest, MAYBE_DecodingSlow) {
+  TestDecoding(FileSelection::kBigger, kThresholdSize);
+}
+
+}  // namespace blink

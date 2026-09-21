@@ -1,0 +1,5 @@
+include_rules = [
+  "+components/cross_device/logging",
+  "+components/push_notification",
+  "+third_party/nearby",
+]

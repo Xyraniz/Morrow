@@ -1,0 +1,112 @@
+// Copyright 2021 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef CHROMEOS_CONSTANTS_CHROMEOS_FEATURES_H_
+#define CHROMEOS_CONSTANTS_CHROMEOS_FEATURES_H_
+
+#include "base/component_export.h"
+#include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
+#include "build/buildflag.h"
+
+namespace chromeos::features {
+
+// All features in alphabetical order. The features should be documented
+// alongside the definition of their values in the .cc file. If a feature is
+// being rolled out via Finch, add a comment in the .cc file.
+
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kBluetoothWifiQSPodRefresh);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kCachedLocationProvider);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) BASE_DECLARE_FEATURE(kCloudGamingDevice);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kAlmanacLauncherPayload);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) BASE_DECLARE_FEATURE(kBlinkExtension);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) BASE_DECLARE_FEATURE(kBlinkExtensionKiosk);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) BASE_DECLARE_FEATURE(kCrosComponents);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kCrosIsolatedWebAppSetShapeAllowlist);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kDataControlsFileAccessDefaultDeny);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kGeminiAppPreinstall);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFeatureManagementMahi);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) BASE_DECLARE_FEATURE(kOrcaDogfood);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFeatureManagementGeminiAppPreinstall);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFeatureManagementHistoryEmbedding);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFeatureManagementPassageEmbedder);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFeatureManagementOrca);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFeatureManagementDisableChromeCompose);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFeatureManagementGlic);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kGlicEnableFor8GbDevices);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFeatureManagementRoundedWindows);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kPlatformKeysChangesWave1);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kQuickAnswersRichCard);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kQuickAnswersV2SettingsSubToggle);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFileSystemProviderCloudFileSystem);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kFileSystemProviderContentCache);
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+BASE_DECLARE_FEATURE(kWebAppManifestProtocolHandlerSupport);
+
+// Keep alphabetized.
+
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsBluetoothWifiQSPodRefreshEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsCachedLocationProviderEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsCloudGamingDeviceEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsAlmanacLauncherPayloadEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsBlinkExtensionEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsCrosComponentsEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsCrosIsolatedWebAppSetShapeAllowlistEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool ShouldDisableChromeComposeOnChromeOS();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsDataControlsFileAccessDefaultDenyEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsFileSystemProviderCloudFileSystemEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsFileSystemProviderContentCacheEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsGeminiAppPreinstallFeatureManagementEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsGeminiAppPreinstallEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsMahiEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsPlatformKeysChangesWave1Enabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsRoundedWindowsEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) int RoundedWindowsRadius();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) extern const char kRoundedWindowsRadius[];
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsSystemBlurEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsSeparateWebAppShortcutBadgeIconEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS) bool IsOrcaEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsQuickAnswersV2SettingsSubToggleEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsQuickAnswersRichCardEnabled();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsQuickAnswersAlwaysTriggerForSingleWord();
+COMPONENT_EXPORT(CHROMEOS_CONSTANTS)
+bool IsFeatureManagementHistoryEmbeddingEnabled();
+
+}  // namespace chromeos::features
+
+#endif  // CHROMEOS_CONSTANTS_CHROMEOS_FEATURES_H_

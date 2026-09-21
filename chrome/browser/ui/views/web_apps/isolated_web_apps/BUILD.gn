@@ -1,0 +1,171 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/ui.gni")
+
+assert(toolkit_views)
+
+source_set("installer_base") {
+  public = [
+    "callback_delayer.h",
+    "isolated_web_app_installer_model.h",
+    "isolated_web_app_installer_view.h",
+    "uninstall_sub_app_identity_view.h",
+  ]
+
+  sources = [
+    "callback_delayer.cc",
+    "isolated_web_app_installer_model.cc",
+    "isolated_web_app_installer_view.cc",
+    "uninstall_sub_app_identity_view.cc",
+  ]
+
+  public_deps = [
+    "//base",
+    "//chrome/browser/web_applications",
+    "//components/webapps/isolated_web_apps",
+    "//ui/base",
+    "//ui/views",
+  ]
+
+  deps = [
+    "//chrome/app:generated_resources",
+    "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/web_apps",
+    "//chrome/browser/ui/web_applications",
+    "//skia",
+    "//ui/gfx",
+    "//url",
+  ]
+}
+
+source_set("isolated_web_app_identity_view") {
+  public = [ "isolated_web_app_identity_view.h" ]
+  sources = [ "isolated_web_app_identity_view.cc" ]
+  public_deps = [
+    "//base",
+    "//chrome/browser/ui/views/web_apps:web_app_icon_name_and_origin_view",
+    "//components/webapps/isolated_web_apps",
+    "//ui/base",
+    "//ui/base/metadata",
+    "//ui/gfx",
+    "//ui/views",
+  ]
+}
+
+source_set("user_installability_checker") {
+  public = [ "isolated_web_app_user_installability_checker.h" ]
+  sources = [ "isolated_web_app_user_installability_checker.cc" ]
+  public_deps = [
+    "//base",
+    "//chrome/browser/web_applications",
+    "//components/webapps/isolated_web_apps",
+  ]
+  deps = [ "//chrome/browser/profiles:profile" ]
+}
+
+if (is_chromeos) {
+  source_set("multi_capture_notification_details_view") {
+    public = [ "multi_capture_notification_details_view.h" ]
+    sources = [ "multi_capture_notification_details_view.cc" ]
+    public_deps = [
+      "//base",
+      "//ui/gfx",
+      "//ui/views",
+    ]
+    deps = [
+      "//chrome/app:generated_resources",
+      "//chrome/app/vector_icons",
+      "//components/vector_icons",
+      "//ui/base",
+      "//ui/color",
+    ]
+  }
+}
+
+source_set("isolated_web_app_installer_view_impl") {
+  public = [ "isolated_web_app_installer_view_impl.h" ]
+  sources = [ "isolated_web_app_installer_view_impl.cc" ]
+  public_deps = [
+    ":installer_base",
+    "//base",
+    "//ui/base/metadata",
+  ]
+  deps = [
+    ":isolated_web_app_installer_view_controller",
+    "//chrome/app:generated_resources",
+    "//chrome/app/theme:theme_resources",
+    "//chrome/app/vector_icons",
+    "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/accessibility",
+    "//chrome/browser/ui/web_applications",
+    "//chrome/browser/web_applications",
+    "//components/vector_icons",
+    "//skia",
+    "//third_party/abseil-cpp:absl",
+    "//ui/base",
+    "//ui/base/mojom:ui_base_types",
+    "//ui/color",
+    "//ui/compositor",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//ui/strings:ui_strings",
+    "//ui/views",
+  ]
+}
+
+source_set("isolated_web_app_installer_view_controller") {
+  public = [ "isolated_web_app_installer_view_controller.h" ]
+  sources = [ "isolated_web_app_installer_view_controller.cc" ]
+  public_deps = [
+    ":installer_base",
+    ":user_installability_checker",
+    "//base",
+    "//components/prefs",
+    "//ui/gfx",
+  ]
+  deps = [
+    "//chrome/app:generated_resources",
+    "//chrome/browser/apps/app_service",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/web_applications",
+    "//components/strings:components_strings",
+    "//components/webapps/common",
+    "//content/public/browser",
+    "//ui/base",
+    "//ui/base/mojom:ui_base_types",
+    "//ui/gfx/geometry",
+    "//ui/strings:ui_strings",
+    "//ui/views",
+  ]
+  if (is_chromeos) {
+    deps += [
+      "//ash/constants",
+      "//ash/public/cpp",
+      "//ash/webui/settings/public/constants:mojom",
+      "//chrome/browser:browser_public_dependencies",
+      "//chrome/browser/ui:settings_window_manager_chromeos",
+      "//chrome/browser/ui/ash/shelf",
+      "//components/services/app_service",
+      "//ui/events",
+    ]
+  }
+}
+
+source_set("isolated_web_app_installer_coordinator") {
+  public = [ "isolated_web_app_installer_coordinator.h" ]
+  sources = [ "isolated_web_app_installer_coordinator.cc" ]
+  public_deps = [
+    "//base",
+    "//components/webapps/common",
+  ]
+  deps = [
+    ":installer_base",
+    ":isolated_web_app_installer_view_controller",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/web_applications",
+    "//chrome/browser/web_applications",
+  ]
+}

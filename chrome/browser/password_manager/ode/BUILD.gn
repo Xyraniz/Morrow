@@ -1,0 +1,41 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+source_set("ode") {
+  public = [ "on_device_encryption_metrics_reporter_factory.h" ]
+  sources = [ "on_device_encryption_metrics_reporter_factory.cc" ]
+  public_deps = [
+    "//chrome/browser/profiles:profile",
+    "//components/password_manager/core/browser/ode",
+  ]
+  deps = [
+    "//chrome/browser/sync",
+    "//components/keyed_service/content",
+    "//components/pref_registry",
+    "//components/sync/base",
+  ]
+
+  if (!is_android) {
+    public += [ "chrome_passkey_on_device_encryption_state_tracker.h" ]
+    sources += [ "chrome_passkey_on_device_encryption_state_tracker.cc" ]
+    public_deps += [ "//chrome/browser/webauthn" ]
+  }
+}
+
+source_set("unit_tests") {
+  testonly = true
+  if (!is_android) {
+    sources =
+        [ "chrome_passkey_on_device_encryption_state_tracker_unittest.cc" ]
+    deps = [
+      ":ode",
+      "//base/test:test_support",
+      "//chrome/browser/webauthn:test_support",
+      "//components/sync:test_support",
+      "//components/webauthn/core/browser:test_support",
+      "//testing/gmock",
+      "//testing/gtest",
+    ]
+  }
+}

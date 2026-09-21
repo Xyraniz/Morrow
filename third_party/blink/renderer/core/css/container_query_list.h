@@ -1,0 +1,66 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CONTAINER_QUERY_LIST_H_
+#define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CONTAINER_QUERY_LIST_H_
+
+#include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
+#include "third_party/blink/renderer/core/css/container_selector.h"
+#include "third_party/blink/renderer/core/dom/events/event_target.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
+
+namespace blink {
+class ExecutionContext;
+class Element;
+class ContainerQuerySet;
+
+class CORE_EXPORT ContainerQueryList final
+    : public EventTarget,
+      public ActiveScriptWrappable<ContainerQueryList>,
+      public ExecutionContextLifecycleObserver {
+  DEFINE_WRAPPERTYPEINFO();
+
+ public:
+  ContainerQueryList(ExecutionContext*,
+                     const ContainerQuerySet*,
+                     Element* element);
+  ContainerQueryList(const ContainerQueryList&) = delete;
+  ContainerQueryList& operator=(const ContainerQueryList&) = delete;
+  ~ContainerQueryList() override;
+
+  bool matches();
+  String query() const;
+
+  bool UpdateMatches();
+  void MarkCacheStale();
+  Element* GetElement() const { return element_.Get(); }
+
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(change, kChange)
+
+  void Trace(Visitor*) const override;
+
+  bool HasPendingActivity() const final;
+
+  void ContextDestroyed() override;
+
+  const AtomicString& InterfaceName() const override;
+  ExecutionContext* GetExecutionContext() const override;
+
+ private:
+  bool ComputeMatches();
+  void InvalidateCacheIfStale();
+
+  ContainerSelectorCache selector_cache_;
+  std::optional<uint64_t> selector_cache_generation_;
+  // Evaluation is deferred to avoid an update of style and layout at
+  // construction; it runs on 1) the rendering step or 2) a matches() read.
+  bool evaluated_ = false;
+  bool matches_ = false;
+  Member<const ContainerQuerySet> container_query_set_;
+  Member<Element> element_;
+};
+
+}  // namespace blink
+
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CONTAINER_QUERY_LIST_H_

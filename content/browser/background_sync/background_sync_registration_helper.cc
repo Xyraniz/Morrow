@@ -1,0 +1,122 @@
+// Copyright 2019 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "content/browser/background_sync/background_sync_registration_helper.h"
+
+#include "base/memory/weak_ptr.h"
+#include "content/browser/background_sync/background_sync_context_impl.h"
+#include "content/browser/background_sync/background_sync_manager.h"
+#include "content/browser/background_sync/background_sync_status.h"
+#include "content/browser/service_worker/service_worker_registration.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/browser/render_process_host.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
+
+namespace content {
+
+BackgroundSyncRegistrationHelper::BackgroundSyncRegistrationHelper(
+    BackgroundSyncContextImpl* background_sync_context,
+    RenderProcessHost* render_process_host)
+    : background_sync_context_(background_sync_context),
+      render_process_host_id_(render_process_host->GetDeprecatedID()) {
+  CHECK(background_sync_context_, base::NotFatalUntil::M159);
+}
+
+BackgroundSyncRegistrationHelper::~BackgroundSyncRegistrationHelper() = default;
+
+bool BackgroundSyncRegistrationHelper::ValidateSWRegistrationID(
+    int64_t sw_registration_id,
+    const blink::StorageKey& storage_key) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+
+  BackgroundSyncManager* background_sync_manager =
+      background_sync_context_->background_sync_manager();
+  CHECK(background_sync_manager, base::NotFatalUntil::M159);
+
+  scoped_refptr<ServiceWorkerRegistration> service_worker_registration =
+      background_sync_manager->service_worker_context()->GetLiveRegistration(
+          sw_registration_id);
+  return service_worker_registration &&
+         service_worker_registration->key() == storage_key;
+}
+
+void BackgroundSyncRegistrationHelper::Register(
+    blink::mojom::SyncRegistrationOptionsPtr options,
+    int64_t sw_registration_id,
+    RegisterCallback callback) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+
+  BackgroundSyncManager* background_sync_manager =
+      background_sync_context_->background_sync_manager();
+  CHECK(background_sync_manager, base::NotFatalUntil::M159);
+
+  background_sync_manager->Register(
+      sw_registration_id, render_process_host_id_, *options,
+      base::BindOnce(&BackgroundSyncRegistrationHelper::OnRegisterResult,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void BackgroundSyncRegistrationHelper::DidResolveRegistration(
+    blink::mojom::BackgroundSyncRegistrationInfoPtr registration_info) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+
+  BackgroundSyncManager* background_sync_manager =
+      background_sync_context_->background_sync_manager();
+  CHECK(background_sync_manager, base::NotFatalUntil::M159);
+
+  background_sync_manager->DidResolveRegistration(std::move(registration_info));
+}
+
+void BackgroundSyncRegistrationHelper::OnRegisterResult(
+    RegisterCallback callback,
+    BackgroundSyncStatus status,
+    std::unique_ptr<BackgroundSyncRegistration> result) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+
+  // TODO(crbug.com/40614176): Use blink::mojom::BackgroundSyncError
+  // directly.
+  if (status != BACKGROUND_SYNC_STATUS_OK) {
+    std::move(callback).Run(
+        static_cast<blink::mojom::BackgroundSyncError>(status),
+        /* options= */ nullptr);
+    return;
+  }
+
+  CHECK(result, base::NotFatalUntil::M159);
+  std::move(callback).Run(
+      static_cast<blink::mojom::BackgroundSyncError>(status),
+      result->options()->Clone());
+}
+
+void BackgroundSyncRegistrationHelper::NotifyInvalidOptionsProvided(
+    RegisterCallback callback) const {
+  mojo::ReportBadMessage(
+      "BackgroundSyncRegistrationHelper: Invalid options passed.");
+  std::move(callback).Run(blink::mojom::BackgroundSyncError::NOT_ALLOWED,
+                          /* options= */ nullptr);
+}
+
+void BackgroundSyncRegistrationHelper::OnGetRegistrationsResult(
+    GetRegistrationsCallback callback,
+    BackgroundSyncStatus status,
+    std::vector<std::unique_ptr<BackgroundSyncRegistration>>
+        result_registrations) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+
+  std::vector<blink::mojom::SyncRegistrationOptionsPtr> mojo_registrations;
+  mojo_registrations.reserve(result_registrations.size());
+  for (const auto& registration : result_registrations)
+    mojo_registrations.push_back(registration->options()->Clone());
+
+  std::move(callback).Run(
+      static_cast<blink::mojom::BackgroundSyncError>(status),
+      std::move(mojo_registrations));
+}
+
+base::WeakPtr<BackgroundSyncRegistrationHelper>
+BackgroundSyncRegistrationHelper::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
+
+}  // namespace content

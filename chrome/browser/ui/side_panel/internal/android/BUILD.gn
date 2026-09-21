@@ -1,0 +1,262 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/android/rules.gni")
+import("//third_party/jni_zero/jni_zero.gni")
+
+# Android C++ side panel internals.
+#
+# This target shouldn't be used by anything outside this directory, except
+# //c/b/ui, which is the C++ "glue" that links the implementation into
+# libchrome.so.
+#
+# Side panel features should depend on the public, cross-platform targets in
+# //c/b/ui/side_panel.
+source_set("android") {
+  visibility = [
+    ":*",
+    "//chrome/browser/ui",
+  ]
+  sources = [
+    "side_panel_coordinator_android.cc",
+    "side_panel_coordinator_android.h",
+    "side_panel_deferred_entry_tracker.cc",
+    "side_panel_deferred_entry_tracker.h",
+    "side_panel_tab_model_observer.cc",
+    "side_panel_tab_model_observer.h",
+    "window_scoped_side_panel_registry_bridge.cc",
+    "window_scoped_side_panel_registry_bridge.h",
+  ]
+
+  deps = [
+    ":jni_headers",
+    "//base",
+    "//chrome/browser/android:tabs_public",
+    "//chrome/browser/tab_list",
+    "//chrome/browser/ui/android/tab_model",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/side_panel",
+    "//chrome/browser/ui/side_panel:side_panel_views_dependent",
+    "//components/tabs:public",
+    "//third_party/jni_zero",
+    "//ui/base/unowned_user_data",
+  ]
+}
+
+# The C++ build target for side panel dev features.
+source_set("dev") {
+  # The tab-scoped dev feature is initialized by tab_features.cc in the
+  # //c/b/android:tabs_impl target.
+  #
+  # The window-scoped dev feature is initialized from Java side, so it needs to
+  # be included in the C++ "glue" target (//c/b/ui).
+  visibility = [
+    "//chrome/browser/android:tabs_impl",
+    "//chrome/browser/ui",
+  ]
+  sources = [
+    "dev/side_panel_tab_scoped_dev_feature.cc",
+    "dev/side_panel_tab_scoped_dev_feature.h",
+    "dev/side_panel_window_scoped_dev_feature.cc",
+    "dev/side_panel_window_scoped_dev_feature.h",
+  ]
+
+  deps = [
+    ":android",
+    ":dev_jni_headers",
+    "//base",
+    "//chrome/browser/android:tabs_public",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/side_panel",
+    "//chrome/browser/ui/side_panel:side_panel_views_dependent",
+    "//chrome/browser/ui/side_panel/android",
+    "//components/tabs:public",
+    "//third_party/jni_zero",
+  ]
+}
+
+android_resources("java_resources") {
+  sources = [
+    "java/res/drawable/side_panel_container_toolbar_height_bg.xml",
+    "java/res/drawable/side_panel_container_webcontent_height_bg.xml",
+    "java/res/layout/side_panel_container.xml",
+    "java/res/layout/side_panel_dev_feature.xml",
+    "java/res/values/dimens.xml",
+  ]
+  deps = [
+    "//components/browser_ui/styles/android:java_resources",
+    "//components/browser_ui/theme/android:java_resources",
+  ]
+}
+
+android_library("java") {
+  visibility = [
+    ":*",
+    "//chrome/android:chrome_all_java",
+    "//chrome/browser/ui/side_panel/test/android:*",
+  ]
+  sources = [
+    "java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelContainerCoordinatorFactory.java",
+    "java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelContainerCoordinatorImpl.java",
+    "java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelCoordinatorAndroidBridge.java",
+    "java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelNativeBridgeSelector.java",
+    "java/src/org/chromium/chrome/browser/ui/side_panel/WindowScopedSidePanelRegistryBridge.java",
+  ]
+
+  deps = [
+    ":java_resources",
+    "//base:base_java",
+    "//build/android:build_java",
+    "//chrome/browser/browser_controls/android:java",
+    "//chrome/browser/profiles/android:java",
+    "//chrome/browser/tab:java",
+    "//chrome/browser/tabmodel:java",
+    "//chrome/browser/ui/browser_window/public/android:factory_java",
+    "//chrome/browser/ui/browser_window/public/android:java",
+    "//chrome/browser/ui/side_panel/android:java",
+    "//chrome/browser/ui/side_ui/public:java",
+    "//components/thin_webview:java",
+    "//third_party/androidx:androidx_annotation_annotation_java",
+    "//third_party/androidx:androidx_core_core_java",
+    "//third_party/jni_zero:jni_zero_java",
+    "//ui/accessibility:ax_base_java",
+    "//ui/android:ui_no_recycler_view_java",
+  ]
+
+  srcjar_deps = [ ":jni_headers" ]
+  resources_package = "org.chromium.chrome.browser.ui.side_panel"
+}
+
+generate_jni("jni_headers") {
+  sources = [
+    "java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelCoordinatorAndroidBridge.java",
+    "java/src/org/chromium/chrome/browser/ui/side_panel/WindowScopedSidePanelRegistryBridge.java",
+  ]
+}
+
+# The Java build target for side panel dev features.
+android_library("dev_java") {
+  visibility = [
+    ":*",
+    "//chrome/android:chrome_all_java",
+  ]
+  sources = [
+    "java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelDevFeatureFactory.java",
+    "java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelTabScopedDevFeatureImpl.java",
+    "java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelWindowScopedDevFeatureImpl.java",
+  ]
+
+  deps = [
+    ":java_resources",
+    "//base:base_java",
+    "//build/android:build_java",
+    "//chrome/browser/android/content:java",
+    "//chrome/browser/android/thin_webview:java",
+    "//chrome/browser/profiles/android:java",
+    "//chrome/browser/tab:java",
+    "//chrome/browser/ui/browser_window/public/android:java",
+    "//chrome/browser/ui/side_panel/android:dev_java",
+    "//chrome/browser/ui/side_panel/android:java",
+    "//content/public/android:content_java",
+    "//third_party/jni_zero:jni_zero_java",
+    "//ui/android:ui_no_recycler_view_java",
+  ]
+
+  srcjar_deps = [ ":dev_jni_headers" ]
+  resources_package = "org.chromium.chrome.browser.ui.side_panel"
+}
+
+# JNI headers for side panel dev features.
+generate_jni("dev_jni_headers") {
+  sources = [
+    "java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelTabScopedDevFeatureImpl.java",
+    "java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelWindowScopedDevFeatureImpl.java",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "window_scoped_side_panel_registry_bridge_unittest.cc" ]
+  deps = [
+    ":android",
+    "//base",
+    "//chrome/browser/ui/browser_window/test:test_support",
+    "//chrome/browser/ui/side_panel:side_panel_views_dependent",
+    "//chrome/browser/ui/side_panel/test/android:native_unit_test_support_jni",
+    "//testing/gmock",
+    "//testing/gtest",
+    "//ui/base/unowned_user_data",
+  ]
+}
+
+source_set("browser_tests") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+  sources = [
+    "side_panel_coordinator_android_browsertest.cc",
+    "side_panel_registry_android_browsertest.cc",
+  ]
+  deps = [
+    ":android",
+    "//chrome/browser/android:tabs_public",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/side_panel",
+    "//chrome/browser/ui/side_panel:side_panel_views_dependent",
+    "//chrome/browser/ui/side_panel/android",
+    "//chrome/browser/ui/side_panel/test/android:browser_test_support",
+    "//chrome/browser/ui/side_panel/test/android:browser_test_support_jni",
+    "//components/tabs:public",
+    "//content/test:test_support",
+    "//testing/gtest",
+    "//ui/android",
+    "//ui/base",
+  ]
+}
+
+robolectric_library("junit") {
+  sources = [ "java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelContainerCoordinatorImplUnitTest.java" ]
+  deps = [
+    ":java",
+    "//base:base_junit_test_support",
+    "//chrome/browser/ui/side_panel/android:java",
+    "//chrome/browser/ui/side_ui/public:java",
+    "//third_party/junit",
+  ]
+}
+
+android_library("javatests") {
+  testonly = true
+  sources = [
+    "java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelContainerCoordinatorIntegrationTest.java",
+    "java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelDevFeatureIntegrationTest.java",
+  ]
+  deps = [
+    ":java",
+    "//base:base_java",
+    "//base:base_java_test_support",
+    "//base/test:public_transit_java",
+    "//chrome/android:chrome_java",
+    "//chrome/browser/flags:java",
+    "//chrome/browser/tab:java",
+    "//chrome/browser/ui/android/night_mode:night_mode_java_test_support",
+    "//chrome/browser/ui/side_panel/android:dev_java",
+    "//chrome/browser/ui/side_panel/android:java",
+    "//chrome/browser/ui/side_panel/test/android:integration_test_support_java",
+    "//chrome/browser/ui/side_ui/public:java",
+    "//chrome/browser/url_constants/android:java",
+    "//chrome/test/android:chrome_java_integration_test_support",
+    "//chrome/test/android:chrome_java_transit",
+    "//content/public/android:content_full_java",
+    "//net/android:net_java_test_support",
+    "//third_party/androidx:androidx_annotation_annotation_java",
+    "//third_party/androidx:androidx_core_core_java",
+    "//third_party/androidx:androidx_test_monitor_java",
+    "//third_party/androidx:androidx_test_runner_java",
+    "//third_party/androidx:androidx_window_window_java",
+    "//third_party/junit",
+    "//ui/android:ui_java_test_support",
+    "//ui/android:ui_no_recycler_view_java",
+  ]
+  data = [ "//chrome/browser/ui/side_panel/test/data/" ]
+}

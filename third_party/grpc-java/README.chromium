@@ -1,0 +1,35 @@
+Name: grpc-java
+URL: https://github.com/grpc/grpc-java
+License: Apache-2.0
+License File: LICENSE
+Version: v1.83.1
+Revision: 8f621c03b776eed114c39969ce1bf347625d2e9d
+Update Mechanism: Manual
+Security Critical: yes
+Shipped: no
+
+Description:
+This directory contains build rules and the grpc-java protoc plugin source code.
+
+The gRPC runtime lives in
+//third_party/android_deps/autorolled/cipd/libs/io_grpc_grpc_*.
+
+Please note that the use of gRPC is not generally allowed within Chromium.
+Before integrating with this library, consult with the security team.
+See go/chrome-grpc-advice for more details.
+
+The only currently allowed use case is for inter-app communication in android
+using on-device binder channel transport.
+
+Steps to upgrade (e.g. after the gRPC runtime gets autorolled):
+- Download the source code of the same version and copy the files from
+  <grpc-java root>/compiler/src/java_plugin/cpp/ to
+  //third_party/grpc-java/compiler_plugin/
+- You might need to update the compiler plugin's build configuration
+  (//third_party/grpc-java/BUILD.gn), for example if files were added or
+  renamed.
+- Update this file (README.chromium) with the new metadata (version, revision,
+  source url and SHA-512 hash).
+
+Source: https://github.com/grpc/grpc-java/archive/refs/tags/v1.83.1.tar.gz
+SHA-512: cd9a44c22c4820f10ae1670520e0558863725eb7eb8e7a7b82b04afa2b3aabd56b5b993cb70b55886104bdcbda212d917ce268aadcea80814cc9cd26548784ce

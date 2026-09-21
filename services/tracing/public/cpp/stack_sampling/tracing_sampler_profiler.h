@@ -1,0 +1,273 @@
+// Copyright 2018 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef SERVICES_TRACING_PUBLIC_CPP_STACK_SAMPLING_TRACING_SAMPLER_PROFILER_H_
+#define SERVICES_TRACING_PUBLIC_CPP_STACK_SAMPLING_TRACING_SAMPLER_PROFILER_H_
+
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "base/component_export.h"
+#include "base/containers/flat_map.h"
+#include "base/debug/debugging_buildflags.h"
+#include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
+#include "base/profiler/sampling_profiler_thread_token.h"
+#include "base/profiler/stack_sampling_profiler.h"
+#include "base/profiler/unwinder.h"
+#include "base/synchronization/lock.h"
+#include "base/threading/platform_thread.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
+#include "services/tracing/public/cpp/perfetto/interning_index.h"
+#include "third_party/perfetto/include/perfetto/ext/tracing/core/trace_writer.h"
+#include "third_party/perfetto/include/perfetto/tracing/data_source.h"
+
+#if BUILDFLAG(IS_ANDROID) && defined(ARCH_CPU_ARM64) && \
+    BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
+#include "base/android/library_loader/anchor_functions_buildflags.h"
+#if BUILDFLAG(SUPPORTS_CODE_ORDERING)
+#define ANDROID_ARM64_UNWINDING_SUPPORTED 1
+#else
+#define ANDROID_ARM64_UNWINDING_SUPPORTED 0
+#endif
+#else
+#define ANDROID_ARM64_UNWINDING_SUPPORTED 0
+#endif
+
+#if BUILDFLAG(IS_ANDROID) && BUILDFLAG(CAN_UNWIND_WITH_CFI_TABLE) && \
+    defined(OFFICIAL_BUILD)
+#define ANDROID_CFI_UNWINDING_SUPPORTED 1
+#else
+#define ANDROID_CFI_UNWINDING_SUPPORTED 0
+#endif
+
+namespace tracing {
+
+// This class is a bridge between the base stack sampling profiler and chrome
+// tracing. It registers threads with TracingSamplerProfilerManager so that they
+// can be profiled whenever a TracingSamplerProfiler::DataSource session is
+// active.
+//
+// The TracingSamplerProfiler must be created and destroyed on the sampled
+// thread.
+class COMPONENT_EXPORT(TRACING_CPP) TracingSamplerProfiler {
+ public:
+  class TracingProfileBuilder;
+
+  class COMPONENT_EXPORT(TRACING_CPP) DataSource
+      : public perfetto::DataSource<DataSource> {
+   public:
+    static constexpr bool kSupportsMultipleInstances = true;
+    static constexpr bool kRequiresCallbacksUnderLock = false;
+
+    using TracePacketHandle =
+        perfetto::DataSource<DataSource>::TraceContext::TracePacketHandle;
+
+    DataSource();
+    ~DataSource() override;
+
+    void OnSetup(const SetupArgs& args) override;
+    void OnStart(const StartArgs& args) override;
+    void OnStop(const StopArgs& args) override;
+    void WillClearIncrementalState(
+        const ClearIncrementalStateArgs& args) override;
+
+    void StartTracing(
+        TracingSamplerProfiler* profiler,
+        const base::RepeatingCallback<std::unique_ptr<base::Unwinder>()>&
+            aux_unwinder_factory);
+    void StopTracing(TracingSamplerProfiler* profiler);
+    void SetAuxUnwinderFactory(
+        TracingSamplerProfiler* profiler,
+        const base::RepeatingCallback<std::unique_ptr<base::Unwinder>()>&
+            factory);
+
+    // We create one trace writer per profiled thread. This is necessary because
+    // each profiler keeps its own interned data index, so to avoid collisions
+    // interned data should go into different writer sequences.
+    std::unique_ptr<perfetto::TraceWriterBase> CreateTraceWriter();
+
+    bool privacy_filtering_enabled() const {
+      return privacy_filtering_enabled_;
+    }
+
+    base::TimeDelta sampling_interval() const { return sampling_interval_; }
+
+    uint32_t instance_index() const { return instance_index_; }
+
+   private:
+    struct Session {
+      std::unique_ptr<base::StackSamplingProfiler> profiler;
+      raw_ptr<TracingProfileBuilder> profile_builder = nullptr;
+    };
+
+    static std::unique_ptr<perfetto::TraceWriterBase> CreateTraceWriter(
+        uint32_t instance_index);
+
+    base::Lock lock_;
+    base::flat_map<base::PlatformThreadId, Session> sessions_ GUARDED_BY(lock_);
+
+    uint32_t instance_index_ = 0;
+    bool privacy_filtering_enabled_ = false;
+    base::TimeDelta sampling_interval_;
+  };
+  using TracePacketHandle = DataSource::TracePacketHandle;
+
+  // StackProfileWriter receives stack samples from profiler and returns
+  // InterningID corresponding to the callstack, emitting interned data into the
+  // trace.
+  class COMPONENT_EXPORT(TRACING_CPP) StackProfileWriter {
+   public:
+    explicit StackProfileWriter(bool should_enable_filtering);
+    ~StackProfileWriter();
+
+    StackProfileWriter(const StackProfileWriter&) = delete;
+    StackProfileWriter& operator=(const StackProfileWriter&) = delete;
+
+    // This function receives stack sample from profiler and returns InterningID
+    // corresponding to the callstack. Meanwhile it could emit extra entries
+    // to intern data. |function_name| member in Frame could be std::move(ed) by
+    // this method to reduce number of copies we have for function names.
+    InterningID GetCallstackIDAndMaybeEmit(std::vector<base::Frame>& frames,
+                                           TracePacketHandle* trace_packet);
+
+    void ResetEmittedState();
+
+   private:
+    const bool should_enable_filtering_;
+    InterningIndex<TypeList<size_t>, SizeList<1024>> interned_callstacks_{};
+    InterningIndex<TypeList<std::pair<std::string, std::string>,
+                            std::pair<uintptr_t, std::string>>,
+                   SizeList<1024, 1024>>
+        interned_frames_{};
+    InterningIndex<TypeList<std::string>, SizeList<1024>>
+        interned_frame_names_{};
+    InterningIndex<TypeList<std::string>, SizeList<1024>>
+        interned_module_names_{};
+    InterningIndex<TypeList<std::string>, SizeList<1024>>
+        interned_module_ids_{};
+    InterningIndex<TypeList<uintptr_t>, SizeList<1024>> interned_modules_{};
+  };
+
+  // Different kinds of unwinders that are used for stack sampling.
+  enum class UnwinderType {
+    kUnknown,
+    kCustomAndroid,
+    kDefault,
+    kLibunwindstackUnwinderAndroid
+  };
+
+  // This class will receive the sampling profiler stackframes and output them
+  // to the chrome trace via an event. Exposed for testing.
+  class COMPONENT_EXPORT(TRACING_CPP) TracingProfileBuilder
+      : public base::ProfileBuilder {
+   public:
+    TracingProfileBuilder(
+        base::PlatformThreadId sampled_thread_id,
+        std::unique_ptr<perfetto::TraceWriterBase> trace_writer,
+        bool should_enable_filtering,
+        const base::RepeatingClosure& sample_callback_for_testing =
+            base::RepeatingClosure());
+    ~TracingProfileBuilder() override;
+
+    // base::ProfileBuilder
+    base::ModuleCache* GetModuleCache() override;
+    void OnSampleCompleted(std::vector<base::Frame> frames,
+                           base::TimeTicks sample_timestamp) override;
+    void OnProfileCompleted(base::TimeDelta profile_duration,
+                            base::TimeDelta sampling_period) override {}
+
+    void SetUnwinderType(TracingSamplerProfiler::UnwinderType unwinder_type);
+    void ResetIncrementalState();
+
+   private:
+    void WriteSampleToTrace(std::vector<base::Frame> frames,
+                            base::TimeTicks sample_timestamp);
+
+    base::ModuleCache module_cache_;
+    const base::PlatformThreadId sampled_thread_id_;
+    std::unique_ptr<perfetto::TraceWriterBase> trace_writer_;
+    StackProfileWriter stack_profile_writer_;
+    std::atomic<bool> reset_incremental_state_{true};
+    base::TimeTicks last_timestamp_;
+    base::RepeatingClosure sample_callback_for_testing_;
+    // Which type of unwinder is being used for stack sampling?
+    UnwinderType unwinder_type_ = UnwinderType::kUnknown;
+  };
+
+  using CoreUnwindersCallback =
+      base::RepeatingCallback<base::StackSamplingProfiler::UnwindersFactory()>;
+
+  // Creates sampling profiler on main thread. The profiler *must* be
+  // destroyed prior to process shutdown. `core_unwinders_factory_function` can
+  // be used to supply custom unwinders to be used during stack sampling.
+  static std::unique_ptr<TracingSamplerProfiler> CreateOnMainThread(
+      CoreUnwindersCallback core_unwinders_factory_function =
+          CoreUnwindersCallback(),
+      UnwinderType unwinder_type = UnwinderType::kUnknown);
+
+  TracingSamplerProfiler(const TracingSamplerProfiler&) = delete;
+  TracingSamplerProfiler& operator=(const TracingSamplerProfiler&) = delete;
+
+  // Sets up tracing sampling profiler on a child thread. The profiler will be
+  // stored in SequencedLocalStorageSlot and will be destroyed with the thread
+  // task runner.
+  static void CreateOnChildThread();
+
+  // Same as CreateOnChildThread above, but this can additionally accept a
+  // callback for supplying custom unwinder(s) to be used during stack sampling.
+  static void CreateOnChildThreadWithCustomUnwinders(
+      CoreUnwindersCallback core_unwinders_factory_function);
+
+  // Registers the TracingSamplerProfiler as a Perfetto data source.
+  static void RegisterDataSource();
+
+  // Sets a callback to create auxiliary unwinders on the main thread profiler,
+  // for handling additional, non-native-code unwind scenarios.
+  static void SetAuxUnwinderFactoryOnMainThread(
+      const base::RepeatingCallback<std::unique_ptr<base::Unwinder>()>&
+          factory);
+
+  // For tests.
+  static void DeleteOnChildThreadForTesting();
+  // Returns whether or not the sampler profiling is able to unwind the stack
+  // on this platform, ignoring any CoreUnwindersCallback provided.
+  static bool IsStackUnwindingSupportedForTesting();
+
+  explicit TracingSamplerProfiler(
+      base::SamplingProfilerThreadToken sampled_thread_token,
+      CoreUnwindersCallback core_unwinders_factory_function =
+          CoreUnwindersCallback(),
+      UnwinderType unwinder_type = UnwinderType::kUnknown);
+  virtual ~TracingSamplerProfiler();
+
+  // Sets a callback to create auxiliary unwinders, for handling additional,
+  // non-native-code unwind scenarios.
+  void SetAuxUnwinderFactory(
+      const base::RepeatingCallback<std::unique_ptr<base::Unwinder>()>&
+          factory);
+
+  // The given callback will be called for every received sample, and can be
+  // called on any thread. Must be called before tracing is started.
+  void SetSampleCallbackForTesting(
+      const base::RepeatingClosure& sample_callback_for_testing);
+
+ private:
+  const base::SamplingProfilerThreadToken sampled_thread_token_;
+  const CoreUnwindersCallback core_unwinders_factory_function_;
+  // To differentiate b/w different unwinders used for browser main
+  // thread sampling.
+  // TODO(crbug.com/40243562): Remove once we have single unwinder for browser
+  // main.
+  UnwinderType unwinder_type_;
+
+  base::RepeatingClosure sample_callback_for_testing_;
+};
+
+}  // namespace tracing
+
+#endif  // SERVICES_TRACING_PUBLIC_CPP_STACK_SAMPLING_TRACING_SAMPLER_PROFILER_H_

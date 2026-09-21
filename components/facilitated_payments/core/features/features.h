@@ -1,0 +1,40 @@
+// Copyright 2023 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef COMPONENTS_FACILITATED_PAYMENTS_CORE_FEATURES_FEATURES_H_
+#define COMPONENTS_FACILITATED_PAYMENTS_CORE_FEATURES_FEATURES_H_
+
+#include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
+#include "build/build_config.h"
+
+namespace payments::facilitated {
+
+#if BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kDisableFacilitatedPaymentsMerchantAllowlist);
+#endif  // BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kEnableDesktopQrCodeDetection);
+#if BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kEnableEwalletNewAccountLinking);
+BASE_DECLARE_FEATURE(kEnableIframeForPix);
+BASE_DECLARE_FEATURE(kEnablePixAccountLinking);
+BASE_DECLARE_FEATURE(kEnablePixAccountLinkingNative);
+extern const base::FeatureParam<std::string>
+    kPixAccountLinkingNativePromptVariant;
+extern const base::FeatureParam<int>
+    kPixAccountLinkingNativeTriggerDelaySeconds;
+extern const base::FeatureParam<std::string> kVideoUrlOnPrompt;
+BASE_DECLARE_FEATURE(kEnablePixInCct);
+#endif  // BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kEnablePixPaymentsInLandscapeMode);
+#if BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kEnableStaticQrCodeForPix);
+BASE_DECLARE_FEATURE(kEwalletPayments);
+BASE_DECLARE_FEATURE(kFacilitatedPaymentsEnableA2APayment);
+#endif  // BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kUseRustPixCodeValidator);
+
+}  // namespace payments::facilitated
+
+#endif  // COMPONENTS_FACILITATED_PAYMENTS_CORE_FEATURES_FEATURES_H_

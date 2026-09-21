@@ -1,0 +1,17 @@
+// Copyright 2019 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "components/sync_device_info/device_info_sync_client.h"
+
+namespace syncer {
+
+DeviceInfoSyncClient::DeviceInfoSyncClient() = default;
+DeviceInfoSyncClient::~DeviceInfoSyncClient() = default;
+
+base::flat_set<std::string>
+DeviceInfoSyncClient::GetGlicExperimentalTriggeringCapabilities() const {
+  return {};
+}
+
+}  // namespace syncer

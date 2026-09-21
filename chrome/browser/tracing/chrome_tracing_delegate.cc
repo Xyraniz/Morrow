@@ -1,0 +1,248 @@
+// Copyright 2015 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/tracing/chrome_tracing_delegate.h"
+
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "base/command_line.h"
+#include "base/functional/bind.h"
+#include "base/json/values_util.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
+#include "base/system/sys_info.h"
+#include "base/time/time.h"
+#include "base/trace_event/named_trigger.h"
+#include "base/values.h"
+#include "build/build_config.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_otr_state.h"
+#include "chrome/common/channel_info.h"
+#include "chrome/common/pref_names.h"
+#include "components/metrics/metrics_pref_names.h"
+#include "components/prefs/pref_service.h"
+#include "components/tracing/common/background_tracing_metrics_provider.h"
+#include "components/tracing/common/background_tracing_state_manager.h"
+#include "components/tracing/common/background_tracing_utils.h"
+#include "components/tracing/common/system_profile_metadata_recorder.h"
+#include "components/tracing/common/tracing_scenarios_config.h"
+#include "components/variations/active_field_trials.h"
+#include "components/version_info/version_info.h"
+#include "content/public/browser/browser_thread.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/tracing/public/cpp/tracing_features.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/android/tab_model/tab_model.h"
+#include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#else
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"  // nogncheck
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_pref_names.h"
+#include "chromeos/dbus/constants/dbus_switches.h"  // nogncheck
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include "base/task/thread_pool.h"
+#include "chrome/installer/util/system_tracing_util.h"
+#endif
+
+namespace {
+
+using tracing::BackgroundTracingStateManager;
+
+}  // namespace
+
+ChromeTracingDelegate::ChromeTracingDelegate(PrefService& local_state)
+    : local_state_(local_state) {
+  // Ensure that this code is called on the UI thread, except for
+  // tests where a UI thread might not have been initialized at this point.
+  DCHECK(
+      content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      !content::BrowserThread::IsThreadInitialized(content::BrowserThread::UI));
+#if !BUILDFLAG(IS_ANDROID)
+  EnsureObservingBrowserCollection();
+#else
+  TabModelList::AddObserver(this);
+#endif
+}
+
+ChromeTracingDelegate::~ChromeTracingDelegate() {
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+#if BUILDFLAG(IS_ANDROID)
+  TabModelList::RemoveObserver(this);
+#endif
+}
+
+#if BUILDFLAG(IS_ANDROID)
+void ChromeTracingDelegate::OnTabModelAdded(TabModel* tab_model) {
+  for (const TabModel* model : TabModelList::models()) {
+    if (model->GetProfile()->IsOffTheRecord()) {
+      latest_incognito_launched_ = base::TimeTicks::Now();
+      base::trace_event::EmitNamedTrigger("incognito-start");
+    }
+  }
+}
+
+void ChromeTracingDelegate::OnTabModelRemoved(TabModel* tab_model) {
+  if (!IsOffTheRecordSessionActive()) {
+    base::trace_event::EmitNamedTrigger("incognito-end");
+  }
+}
+
+#else
+
+void ChromeTracingDelegate::EnsureObservingBrowserCollection() const {
+  if (browser_collection_observation_.IsObserving()) {
+    return;
+  }
+  // `g_browser_process` is null when `ChromeTracingDelegate` is instantiated
+  // early during PreCreateThreads(), or in some unit test environments. Start
+  // observing once the browser process is available.
+  if (g_browser_process) {
+    browser_collection_observation_.Observe(
+        GlobalBrowserCollection::GetInstance());
+  }
+}
+
+void ChromeTracingDelegate::OnBrowserCreated(BrowserWindowInterface* browser) {
+  if (browser->GetProfile()->IsOffTheRecord()) {
+    latest_incognito_launched_ = base::TimeTicks::Now();
+    base::trace_event::EmitNamedTrigger("incognito-start");
+  }
+}
+
+void ChromeTracingDelegate::OnBrowserClosed(BrowserWindowInterface* browser) {
+  if (!IsOffTheRecordSessionActive()) {
+    base::trace_event::EmitNamedTrigger("incognito-end");
+  }
+}
+
+#endif  // BUILDFLAG(IS_ANDROID)
+
+bool ChromeTracingDelegate::IsRecordingAllowed(
+    IsLocalScenario is_local_scenario,
+    base::TimeTicks session_start) const {
+#if !BUILDFLAG(IS_ANDROID)
+  EnsureObservingBrowserCollection();
+#endif
+
+  if ((g_browser_process && IsOffTheRecordSessionActive()) ||
+      session_start <= latest_incognito_launched_) {
+    UMA_HISTOGRAM_ENUMERATION(
+        "Tracing.Background.FinalizationDisallowedReason",
+        TracingFinalizationDisallowedReason::kIncognitoLaunched);
+    return false;
+  }
+
+  // Local scenarios save traces locally without uploading to metrics servers,
+  // so they do not require UMA metrics consent.
+  if (!*is_local_scenario &&
+      !local_state_->GetBoolean(metrics::prefs::kMetricsReportingEnabled)) {
+    UMA_HISTOGRAM_ENUMERATION(
+        "Tracing.Background.FinalizationDisallowedReason",
+        TracingFinalizationDisallowedReason::kMetricsReportingDisabled);
+    return false;
+  }
+
+  return true;
+}
+
+bool ChromeTracingDelegate::ShouldSaveUnuploadedTrace() const {
+  return true;
+}
+
+std::unique_ptr<tracing::BackgroundTracingStateManager>
+ChromeTracingDelegate::CreateStateManager() {
+  return tracing::BackgroundTracingStateManager::CreateInstance(
+      &local_state_.get());
+}
+
+std::string ChromeTracingDelegate::RecordSerializedSystemProfileMetrics()
+    const {
+  metrics::SystemProfileProto system_profile_proto;
+  auto recorder = tracing::BackgroundTracingMetricsProvider::
+      GetSystemProfileMetricsRecorder();
+  if (!recorder) {
+    return std::string();
+  }
+  recorder.Run(system_profile_proto);
+  std::string serialized_system_profile;
+  system_profile_proto.SerializeToString(&serialized_system_profile);
+  return serialized_system_profile;
+}
+
+tracing::MetadataDataSource::BundleRecorder
+ChromeTracingDelegate::CreateSystemProfileMetadataRecorder() const {
+  return base::BindRepeating(&tracing::RecordSystemProfileMetadata);
+}
+
+tracing::MetadataDataSource::ChromeMetadataRecorder
+ChromeTracingDelegate::CreateChromeMetadataPacketRecorder() const {
+  return base::BindRepeating(&tracing::FillChromeMetadataPacket,
+                             chrome::GetChannel());
+}
+
+#if BUILDFLAG(IS_WIN)
+void ChromeTracingDelegate::GetSystemTracingState(
+    base::OnceCallback<void(bool service_supported, bool service_enabled)>
+        on_tracing_state) {
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock{}},
+      base::BindOnce([]() -> std::pair<bool, bool> {
+        return {installer::IsSystemTracingServiceSupported(),
+                installer::IsSystemTracingServiceRegistered()};
+      }),
+      base::BindOnce(
+          [](base::OnceCallback<void(bool service_supported,
+                                     bool service_enabled)> on_tracing_state,
+             std::pair<bool, bool> state) {
+            std::move(on_tracing_state).Run(state.first, state.second);
+          },
+          std::move(on_tracing_state)));
+}
+
+void ChromeTracingDelegate::EnableSystemTracing(
+    base::OnceCallback<void(bool success)> on_complete) {
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock{}}, base::BindOnce([]() {
+        return installer::ElevateAndRegisterSystemTracingService();
+      }),
+      std::move(on_complete));
+}
+
+void ChromeTracingDelegate::DisableSystemTracing(
+    base::OnceCallback<void(bool success)> on_complete) {
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock{}}, base::BindOnce([]() {
+        return installer::ElevateAndDeregisterSystemTracingService();
+      }),
+      std::move(on_complete));
+}
+#endif  // BUILDFLAG(IS_WIN)
+
+bool ChromeTracingDelegate::IsSystemWideTracingEnabled() {
+#if BUILDFLAG(IS_CHROMEOS)
+  // Always allow system tracing in dev mode images.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          chromeos::switches::kSystemDevMode)) {
+    return true;
+  }
+  // In non-dev images, honor the pref for system-wide tracing.
+  PrefService* local_state = g_browser_process->local_state();
+  DCHECK(local_state);
+  return local_state->GetBoolean(ash::prefs::kDeviceSystemWideTracingEnabled);
+#else
+  return false;
+#endif
+}

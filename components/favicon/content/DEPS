@@ -1,0 +1,13 @@
+include_rules = [
+  "+components/history/core/browser",
+  "+content/public",
+  "+third_party/blink/public/common",
+  "+third_party/blink/public/mojom/favicon",
+  "+third_party/skia/include",
+]
+
+specific_include_rules = {
+  "content_favicon_util_unittest\.cc": [
+    "+net/base/net_errors.h",
+  ],
+}

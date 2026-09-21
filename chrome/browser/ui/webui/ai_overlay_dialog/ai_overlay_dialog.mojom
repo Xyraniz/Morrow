@@ -1,0 +1,196 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module ai_overlay_dialog.mojom;
+
+import "mojo/public/mojom/base/big_buffer.mojom";
+import "chrome/browser/ui/webui/ai_overlay_dialog/tools/tools.mojom";
+import "third_party/blink/public/mojom/dom/dom_node_id.mojom";
+import "ui/gfx/geometry/mojom/geometry.mojom";
+import "url/mojom/url.mojom";
+
+// Represents the semantic role of a page content node.
+enum NodeRole {
+  kNone,
+  kButton,
+  kCheckbox,
+  kCombobox,
+  kInput,
+  kLink,
+  kRadio,
+  kTextbox,
+};
+
+// Represents a structured node in the document tree for active page context.
+struct PageContentNode {
+  int32 dom_node_id;
+  string tag_name;
+  NodeRole role = kNone;
+  string text;
+  string value;
+  string placeholder;
+  bool is_checked;
+  url.mojom.Url? url;
+  bool is_interactive;
+  array<PageContentNode> children;
+};
+
+// Result payload containing raw JPEG image data bytes and scale metadata.
+struct RawViewportRegionResult {
+  // Deprecated: Migrating to jpeg_bytes. To be removed after internal roll.
+  string jpeg_data_b64;
+  mojo_base.mojom.BigBuffer jpeg_bytes;
+  int32 width;
+  int32 height;
+  float scale_factor;
+};
+
+// Result payload containing raw image data bytes and mime type.
+struct ImageBytesResult {
+  mojo_base.mojom.BigBuffer image_bytes;
+  string mime_type;
+};
+
+// Represents a remembered conversational note or user preference entry.
+struct RememberedNote {
+  string key;
+  string value;
+};
+
+// Factory for creating a PageHandler.
+interface PageHandlerFactory {
+  // The WebUI calls this method when the page is first initialized.
+  CreatePageHandler(pending_receiver<PageHandler> handler,
+                    pending_remote<Page> page,
+                    pending_receiver<AiOverlayTools> tools);
+};
+
+// Implemented by browser C++ code. Called by WebUI.
+interface PageHandler {
+  // Returns the JSON data for the mock audio files specified on the command
+  // line. Returns null if no file was specified or the file couldn't be read.
+  // This is used during development to provide precanned audio data that can
+  // be sent on devices without a microphone.
+  GetMockAudioData() => (string? json_data);
+
+  // Sends the current audio volume (0.0 to 1.0) to animate the toolbar button.
+  UpdateAudioEnergy(float energy);
+
+  // Closes and dismisses the overlay WebUI dialog widget. Calling this is
+  // equivalent to the user clicking the toolbar microphone button to deactivate
+  // listening, tearing down the active audio listener and session via HideOverlay().
+  // TODO(crbug.com/540858790): Rename HideOverlay() to CloseOverlay() for clarity.
+  Close();
+
+  // Returns current mouse pointer coordinates relative to the tab viewport,
+  // or null if the cursor is outside the target web contents.
+  GetCursorPosition() => (gfx.mojom.Point? position);
+
+  // Captures a cropped, un-annotated region of the tab surface.
+  //
+  // x, y: Top-left corner coordinates of the target region in viewport CSS pixels.
+  // width, height: Dimensions of the target region in viewport CSS pixels.
+  // Returns null if there is no active web contents, render view, or if surface
+  // capture/encoding fails.
+  CaptureRawViewportRegion(int32 x, int32 y, int32 width, int32 height)
+      => (RawViewportRegionResult? result);
+
+  // Native Primitives for Remembered Note Dictionary Storage:
+
+  // Stores a remembered note in memory, creating a new entry or updating any
+  // existing entry under `note.key`. Passing an empty string for
+  // `note.value` deletes any existing entry under that key.
+  SetRememberedNote(RememberedNote note) => (bool success);
+
+  // Retrieves all currently stored key-value remembered notes.
+  GetRememberedNotes() => (array<RememberedNote> notes);
+
+  // Retrieves the raw image content and MIME type for an image or linked image
+  // element on the active page by its numeric DOM node ID.
+  // Returns null if there is no active tab/frame, the node ID does not
+  // correspond to a valid image, or image extraction fails.
+  GetImageBytes(blink.mojom.DOMNodeId dom_node_id)
+      => (ImageBytesResult? result);
+
+  // Streaming backend methods:
+
+  // Starts a bidirectional streaming session with the Model Execution Service
+  // (MES) backend.
+  StartStreamingSession();
+
+  // Sends a chunk of PCM audio data to the MES backend.
+  // `pcm_data`: Raw 16kHz 16-bit mono Little-Endian PCM audio samples captured
+  // from the user's microphone.
+  SendAudioChunk(mojo_base.mojom.BigBuffer pcm_data);
+
+  // Submits a typed text query to the MES backend as part of the active session.
+  // `text`: The user-provided text query.
+  SendTextInput(string text);
+
+  // Reports the latest sequence number of audio played out through speakers.
+  // `last_played_sequence_number`: Monotonically increasing sequence number
+  // from `OnAudioOutput` corresponding to the last audio chunk that finished
+  // speaker playback, informing the backend of playback latency and barge-in.
+  ReportPlaybackStatus(int64 last_played_sequence_number);
+
+  // Closes the active streaming session with the backend.
+  StopStreamingSession();
+};
+
+// Implemented by the WebUI (TypeScript/JS). Called by the Browser C++.
+interface Page {
+  // Called whenever the page has changed (e.g. a new tab has been focused, or
+  // the current page has navigated). The provided URL is passed as a string
+  // since it's only ever used as page context for a prompt; it's never parsed
+  // or navigated.
+  DidChangePage(string url, string? title, string? content);
+
+  // Passes context about the current page to the app.
+  UpdateCurrentPageContext(string page_title, PageContentNode? root_node);
+
+  // TODO(crbug.com/535704548): Consider renaming SetInputCaptionsVisible to
+  // SetInputCaptionsEnabled to avoid confusion with time-based/ephemeral visibility.
+  // Controls whether input captions are visible.
+  SetInputCaptionsVisible(bool visible);
+
+  // Controls whether output captions are visible.
+  SetOutputCaptionsVisible(bool visible);
+
+  // Sets whether to use a persona.
+  SetUsePersona(bool use_persona);
+
+  // Streaming backend notifications:
+
+  // Called when the streaming session connection status changes.
+  // `connected`: True if the bidirectional session is actively established;
+  // false if disconnected or failed.
+  // `session_id`: Unique identifier string assigned to this session by the
+  // server backend, or empty if disconnected.
+  // `error_message`: Human-readable error description if the session failed or
+  // closed unexpectedly, or empty string on clean shutdown.
+  OnStreamingSessionStateChanged(bool connected,
+                                 string session_id,
+                                 string error_message);
+
+  // Delivers live real-time transcriptions for display in caption UI.
+  // `input_transcription`: Live speech-to-text transcription of the user's
+  // spoken audio query.
+  // `output_transcription`: Text transcript of the model's generated response.
+  OnTranscriptions(string input_transcription, string output_transcription);
+
+  // Delivers an audio chunk generated by the model for client-side speaker
+  // playback.
+  // `audio_data`: Buffer containing raw 24kHz 16-bit mono PCM audio samples.
+  // `sequence_number`: Server-assigned sequence identifier for this audio
+  // chunk, tracked and reported back via `ReportPlaybackStatus`.
+  OnAudioOutput(mojo_base.mojom.BigBuffer audio_data, int64 sequence_number);
+
+  // Signals transitions in the model's response generation lifecycle.
+  // `started`: True when the model has begun generating a response turn.
+  // `completed`: True when the model has finished producing output for the
+  // current turn.
+  // `interrupted`: True if ongoing generation was abruptly halted by the server
+  // (e.g. user barge-in detected).
+  OnGenerationStateChanged(bool started, bool completed, bool interrupted);
+};

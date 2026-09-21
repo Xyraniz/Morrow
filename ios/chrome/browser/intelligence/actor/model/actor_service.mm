@@ -1,0 +1,471 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#import "ios/chrome/browser/intelligence/actor/model/actor_service.h"
+
+#import <algorithm>
+#import <set>
+
+#import "base/barrier_callback.h"
+#import "base/check.h"
+#import "base/functional/bind.h"
+#import "base/strings/sys_string_conversions.h"
+#import "components/actor/core/aggregated_journal.h"
+#import "components/actor/core/safety_list_manager.h"
+#import "components/origin_gating/core/origin_gating_configuration.h"
+#import "components/origin_gating/core/types.h"
+#import "ios/chrome/app/background_mode_buildflags.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_origin_gating_checker_delegate_ios.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_task.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_task_updates_observer.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_factory.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_request.h"
+#import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
+#import "ios/chrome/browser/intelligence/actor/tools/utils/actor_browser_utils.h"
+#import "ios/chrome/browser/intelligence/actor/tools/utils/actor_tool_utils.h"
+#import "ios/chrome/browser/intelligence/actor/tools/utils/logging_util.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_config.h"
+#import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/browser/browser_list.h"
+#import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/web_state_list/browser_util.h"
+#import "ios/web/public/web_state.h"
+
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+#import "ios/chrome/app/application_delegate/app_state.h"  // nogncheck
+#import "ios/chrome/app/background_task/background_continued_processing_app_agent.h"  // nogncheck
+#import "ios/chrome/app/background_task/background_continued_processing_task_configuration.h"  // nogncheck
+#import "ios/chrome/app/background_task/background_continued_processing_task_context.h"  // nogncheck
+#import "ios/chrome/app/profile/profile_state.h"  // nogncheck
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"  // nogncheck
+#import "ios/chrome/browser/shared/model/browser/browser_list_utils.h"
+#endif
+
+namespace {
+
+// Evaluates the destination against the Actor Safety List component data.
+origin_gating::Decision EvaluateSafetyListPredicate(
+    origin_gating::GatingDecisionContext* context,
+    const GURL& source,
+    const GURL& destination) {
+  actor::SafetyListManager* safety_list_manager =
+      actor::SafetyListManager::GetInstance();
+  if (!safety_list_manager) {
+    return origin_gating::Decision::kNoDecision;
+  }
+
+  const GURL& effective_source = source.is_empty() ? destination : source;
+  switch (safety_list_manager->Find(effective_source, destination)) {
+    case actor::SafetyListManager::Decision::kAllow:
+      return origin_gating::Decision::kAllowed;
+    case actor::SafetyListManager::Decision::kBlock:
+      return origin_gating::Decision::kBlocked;
+    case actor::SafetyListManager::Decision::kNone:
+      return origin_gating::Decision::kNoDecision;
+  }
+}
+
+}  // namespace
+
+namespace actor {
+
+ActorService::ActorService(ProfileIOS* profile)
+    : profile_(profile),
+      tool_factory_(std::make_unique<ActorToolFactory>(profile)),
+      journal_(std::make_unique<AggregatedJournal>()),
+      origin_gating_checker_(
+          std::make_unique<origin_gating::OriginGatingChecker>(
+              origin_gating_delegate_.GetWeakPtr(),
+              CreateOriginGatingConfig())) {
+  CHECK(tool_factory_);
+  CHECK(origin_gating_checker_);
+}
+
+ActorService::~ActorService() {
+  Shutdown();
+}
+
+void ActorService::Shutdown() {
+  task_observers_.clear();
+}
+
+ActorTaskId ActorService::CreateTask(const std::string& title,
+                                     bool allow_incognito_web_states) {
+  CHECK(IsActorEnabled());
+
+  const ActorTaskId task_id = next_task_id_.GenerateNextId();
+  BrowserList* browser_list = BrowserListFactory::GetForProfile(profile_);
+  auto task = std::make_unique<ActorTask>(
+      task_id, title, allow_incognito_web_states, journal_.get(),
+      tool_factory_.get(), browser_list, origin_gating_checker_.get());
+
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+  RegisterBackgroundTask(task.get());
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+
+  for (id<ActorTaskUpdatesObserver> observer : task_observers_) {
+    if (observer) {
+      task->AddObserver(observer);
+    }
+  }
+
+  active_tasks_[task_id] = std::move(task);
+  return task_id;
+}
+
+void ActorService::PerformActions(
+    ActorTaskId task_id,
+    const std::vector<optimization_guide::proto::Action>& actions,
+    const std::string& task_update,
+    PerformActionsCallback callback) {
+  CHECK(IsActorEnabled());
+
+  auto it = active_tasks_.find(task_id);
+  if (it == active_tasks_.end()) {
+    // TODO(crbug.com/503054406): Return high level error for non-existent
+    // task.
+    PerformActionsResult actions_result;
+    std::move(callback).Run(std::move(actions_result));
+    return;
+  }
+
+  std::vector<std::unique_ptr<ActorToolRequest>> tool_requests;
+  tool_requests.reserve(actions.size());
+  for (const auto& action : actions) {
+    tool_requests.push_back(std::make_unique<ActorToolRequest>(action));
+  }
+
+  // Resolve and register target WebStates from requests before execution.
+  AddControlledWebStates(it->second.get(), tool_requests);
+
+  it->second->Act(std::move(tool_requests), task_update,
+                  base::BindOnce(&ActorService::OnActCompleted,
+                                 weak_ptr_factory_.GetWeakPtr(), task_id,
+                                 std::move(callback)));
+}
+
+void ActorService::RequestTabObservation(ActorTaskId task_id,
+                                         web::WebState* web_state,
+                                         TabObservationCallback callback) {
+  auto it = active_tasks_.find(task_id);
+  if (it == active_tasks_.end() || !web_state) {
+    std::move(callback).Run(PageContextWrapperCallbackResponse());
+    return;
+  }
+
+  PageContextWrapperConfigBuilder builder;
+  builder.SetUseRichExtraction(true);
+  builder.SetUseRichExtractionWithActionable(true);
+  builder.SetIncludeSameSiteOnly(true);
+  PageContextWrapperConfig config = builder.Build();
+
+  web::WebStateID web_state_id = web_state->GetUniqueIdentifier();
+
+  PageContextWrapper* page_context_wrapper = [[PageContextWrapper alloc]
+        initWithWebState:web_state
+                  config:config
+      completionCallback:base::BindOnce(
+                             &ActorService::OnPageContextExtractionComplete,
+                             weak_ptr_factory_.GetWeakPtr(), web_state_id,
+                             std::move(callback))];
+
+  pending_observations_[web_state_id] = page_context_wrapper;
+
+  [page_context_wrapper setShouldGetAnnotatedPageContent:YES];
+  [page_context_wrapper setShouldGetSnapshot:YES];
+  [page_context_wrapper setShouldForceUpdateMissingSnapshots:YES];
+  [page_context_wrapper populatePageContextFieldsAsync];
+}
+
+void ActorService::PauseTask(ActorTaskId task_id, bool from_actor) {
+  // TODO(crbug.com/496163986): Implement and test.
+}
+
+void ActorService::InterruptTask(ActorTaskId task_id,
+                                 ActorTaskInterruptReason reason) {
+  // TODO(crbug.com/548051839): Implement and test.
+}
+
+void ActorService::StopTask(ActorTaskId task_id,
+                            ActorTaskStoppedReason reason) {
+  // TODO(crbug.com/496163986): Implement and test.
+  auto it = active_tasks_.find(task_id);
+  if (it != active_tasks_.end()) {
+    it->second->Stop(reason);
+  }
+  active_tasks_.erase(task_id);
+}
+
+// TODO(crbug.com/517583120): Remove when the temporary actuation prototype is
+// cleaned up.
+void ActorService::StopAllTasks() {
+  while (!active_tasks_.empty()) {
+    StopTask(active_tasks_.begin()->first,
+             ActorTaskStoppedReason::kStoppedByUser);
+  }
+}
+
+// TODO(crbug.com/556295233): Add new ActorService observation pattern for
+// coarse updates (task started/completed).
+void ActorService::AddTaskUpdatesObserver(
+    id<ActorTaskUpdatesObserver> observer) {
+  if (!observer || std::ranges::contains(task_observers_, observer)) {
+    return;
+  }
+  std::erase_if(task_observers_, [](id obs) { return obs == nil; });
+  task_observers_.push_back(observer);
+  for (const auto& [task_id, task] : active_tasks_) {
+    task->AddObserver(observer);
+  }
+}
+
+// TODO(crbug.com/556295233): Add new ActorService observation pattern for
+// coarse updates (task started/completed).
+void ActorService::RemoveTaskUpdatesObserver(
+    id<ActorTaskUpdatesObserver> observer) {
+  std::erase(task_observers_, observer);
+  for (const auto& [task_id, task] : active_tasks_) {
+    task->RemoveObserver(observer);
+  }
+}
+
+std::optional<ActorTaskState> ActorService::GetActiveTaskState() const {
+  if (active_tasks_.empty()) {
+    return std::nullopt;
+  }
+  return active_tasks_.rbegin()->second->GetState();
+}
+
+web::WebState* ActorService::GetWebStateForID(web::WebStateID web_state_id,
+                                              ActorTaskId task_id) {
+  auto it = active_tasks_.find(task_id);
+  if (it == active_tasks_.end()) {
+    return nullptr;
+  }
+
+  for (const auto& weak_ptr : it->second->controlled_web_states()) {
+    if (weak_ptr && weak_ptr->GetUniqueIdentifier() == web_state_id) {
+      return weak_ptr.get();
+    }
+  }
+
+  return nullptr;
+}
+
+void ActorService::AddControlledWebState(ActorTaskId task_id,
+                                         web::WebState* web_state) {
+  CHECK(IsActorEnabled());
+
+  auto it = active_tasks_.find(task_id);
+  if (it != active_tasks_.end()) {
+    it->second->AddControlledWebState(web_state);
+  }
+}
+
+origin_gating::OriginGatingChecker* ActorService::GetOriginGatingChecker() {
+  return origin_gating_checker_.get();
+}
+
+#pragma mark - Private
+
+void ActorService::OnPageContextExtractionComplete(
+    web::WebStateID web_state_id,
+    TabObservationCallback callback,
+    PageContextWrapperCallbackResponse response) {
+  pending_observations_.erase(web_state_id);
+  std::move(callback).Run(std::move(response));
+}
+
+void ActorService::OnActCompleted(ActorTaskId task_id,
+                                  PerformActionsCallback callback,
+                                  std::vector<ActionResult> results) {
+  PerformActionsResult perform_actions_result;
+  perform_actions_result.action_results = std::move(results);
+
+  auto it = active_tasks_.find(task_id);
+  if (it == active_tasks_.end()) {
+    std::move(callback).Run(std::move(perform_actions_result));
+    return;
+  }
+
+  ActorTask* task = it->second.get();
+  std::vector<web::WebState*> web_states_to_extract;
+
+  // TODO(crbug.com/505080093): Extract PageContext for *all* of the controlled
+  // WebStates when this is supported, instead of just one. Right now there
+  // should only be one, we iterate until the first valid one.
+  for (const auto& weak_web_state : task->controlled_web_states()) {
+    if (web::WebState* web_state = weak_web_state.get()) {
+      web_states_to_extract.push_back(web_state);
+      break;
+    }
+  }
+
+  if (web_states_to_extract.empty()) {
+    std::move(callback).Run(std::move(perform_actions_result));
+    return;
+  }
+
+  // Barrier to wait for all PageContext extractions and add them to
+  // ActionsResult.
+  auto barrier = base::BarrierCallback<std::unique_ptr<TabObservationResponse>>(
+      web_states_to_extract.size(),
+      base::BindOnce(
+          [](PerformActionsCallback callback, PerformActionsResult result,
+             std::vector<std::unique_ptr<TabObservationResponse>> contexts) {
+            result.page_contexts = std::move(contexts);
+            std::move(callback).Run(std::move(result));
+          },
+          std::move(callback), std::move(perform_actions_result)));
+
+  for (web::WebState* web_state : web_states_to_extract) {
+    web::WebStateID id = web_state->GetUniqueIdentifier();
+    RequestTabObservation(
+        task_id, web_state,
+        base::BindOnce(
+            [](web::WebStateID id,
+               base::RepeatingCallback<void(
+                   std::unique_ptr<actor::TabObservationResponse>)> barrier,
+               PageContextWrapperCallbackResponse response) {
+              barrier.Run(std::make_unique<actor::TabObservationResponse>(
+                  id, std::move(response), true));
+            },
+            id, barrier));
+  }
+}
+
+void ActorService::AddControlledWebStates(
+    ActorTask* task,
+    const std::vector<std::unique_ptr<ActorToolRequest>>& actions) {
+  CHECK(IsActorEnabled());
+  CHECK(task);
+
+  for (const auto& request : actions) {
+    // The vector is populated by `CreateActorToolRequests` with non-null
+    // entries, and since `AddControlledWebStates` is called before the vector
+    // is moved to the task, the pointers are guaranteed to still be valid.
+    CHECK(request);
+    web::WebStateID target_id = request->GetTargetWebStateId();
+    if (!target_id.valid()) {
+      continue;
+    }
+
+    web::WebState* web_state =
+        GetWebState(target_id, task->allow_incognito_web_states());
+    if (web_state) {
+      task->AddControlledWebState(web_state);
+    }
+  }
+}
+
+web::WebState* ActorService::GetWebState(web::WebStateID web_state_id,
+                                         bool allows_incognito) {
+  BrowserAndIndex browser_and_index =
+      FindBrowserAndIndexFromProfile(profile_, web_state_id, allows_incognito);
+
+  if (browser_and_index.tab_index == WebStateList::kInvalidIndex ||
+      !browser_and_index.browser) {
+    return nullptr;
+  }
+
+  return browser_and_index.browser->GetWebStateList()->GetWebStateAt(
+      browser_and_index.tab_index);
+}
+
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+bool ActorService::RegisterBackgroundTask(ActorTask* task) {
+  CHECK(task);
+  const ActorTaskId task_id = task->task_id();
+  if (!IsGeminiActorBackgroundingEnabled()) {
+    LogJournalEvent(*journal_, GURL(), task_id,
+                    "ActorService::RegisterBackgroundTask",
+                    {{"status", "feature_disabled"}});
+    return false;
+  }
+
+  BrowserList* browser_list = BrowserListFactory::GetForProfile(profile_);
+  Browser* browser =
+      browser_list_utils::GetMostActiveSceneBrowser(browser_list);
+  SceneState* scene_state = browser ? browser->GetSceneState() : nil;
+  if (!scene_state) {
+    LogJournalEvent(*journal_, GURL(), task_id,
+                    "ActorService::RegisterBackgroundTask",
+                    {{"status", "no_active_scene"}});
+    return false;
+  }
+  AppState* app_state = scene_state.profileState.appState;
+
+  BackgroundContinuedProcessingAppAgent* agent =
+      [BackgroundContinuedProcessingAppAgent agentFromApp:app_state];
+  if (!agent) {
+    LogJournalEvent(*journal_, GURL(), task_id,
+                    "ActorService::RegisterBackgroundTask",
+                    {{"status", "no_backgrounding_task_app_agent"}});
+    return false;
+  }
+
+  base::WeakPtr<ActorService> weak_service = weak_ptr_factory_.GetWeakPtr();
+
+  void (^expiration_handler)(void) = ^{
+    if (weak_service) {
+      weak_service->StopTask(task_id, ActorTaskStoppedReason::kShutdown);
+    }
+  };
+
+  BackgroundContinuedProcessingTaskConfiguration* config =
+      [[BackgroundContinuedProcessingTaskConfiguration alloc]
+              initWithTitle:base::SysUTF8ToNSString(task->title())
+          expirationHandler:expiration_handler];
+  config.subtitle = @"";
+
+  std::string task_id_string = base::NumberToString(task_id.value());
+  BackgroundContinuedProcessingTaskContext* context =
+      [agent requestTaskWithIdentifier:base::SysUTF8ToNSString(task_id_string)
+                         configuration:config];
+  if (!context) {
+    LogJournalEvent(*journal_, GURL(), task_id,
+                    "ActorService::RegisterBackgroundTask",
+                    {{"status", "request_background_task_rejected"}});
+    return false;
+  }
+
+  task->SetBackgroundTaskContext(context);
+  LogJournalEvent(*journal_, GURL(), task_id,
+                  "ActorService::RegisterBackgroundTask",
+                  {{"status", "success (not guaranteed to be executed)"}});
+  return true;
+}
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+
+// static
+origin_gating::OriginGatingConfiguration
+ActorService::CreateOriginGatingConfig() {
+  return origin_gating::OriginGatingConfiguration(
+      /*predicates=*/
+      {
+          origin_gating::PredicateConfiguration(
+              /*predicate=*/origin_gating::CustomPredicate(
+                  base::BindRepeating(&EvaluateSafetyListPredicate),
+                  ActorCustomPredicate::kSafetyList),
+              /*events=*/
+              {// Gate explicit navigation requests to prevent the actor from
+               // navigating to unapproved or dangerous destinations.
+               origin_gating::GateableEvent::kNavigationRequest,
+               // Gate navigations to prevent the actor from navigating to
+               // unapproved or dangerous destinations.
+               origin_gating::GateableEvent::kNavigationResponse,
+               // Gate user/actor page interactions (clicks, from inputs,
+               // etc.) within the loaded page.
+               origin_gating::GateableEvent::kPageAction}),
+      },
+      // Do not cache decisions per-site, as actor safety policies require
+      // re-evaluating each navigation and page action dynamically.
+      /*use_site_keyed_cache=*/false);
+}
+
+}  // namespace actor

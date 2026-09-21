@@ -1,0 +1,598 @@
+// Copyright 2025 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#import <Foundation/Foundation.h>
+#import <XCTest/XCTest.h>
+
+#import "base/json/json_reader.h"
+#import "base/strings/strcat.h"
+#import "base/strings/stringprintf.h"
+#import "base/strings/sys_string_conversions.h"
+#import "base/strings/utf_string_conversions.h"
+#import "base/system/sys_info.h"
+#import "base/test/ios/wait_util.h"
+#import "base/version_info/version_info.h"
+#import "components/enterprise/browser/enterprise_switches.h"
+#import "components/grit/policy_resources.h"
+#import "components/grit/policy_resources_map.h"
+#import "components/policy/core/common/features.h"
+#import "components/policy/test_support/embedded_policy_test_server.h"
+#import "components/strings/grit/components_branded_strings.h"
+#import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/policy/model/policy_app_interface.h"
+#import "ios/chrome/browser/policy/model/policy_earl_grey_utils.h"
+#import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/fake_system_identity.h"
+#import "ios/chrome/grit/ios_strings.h"
+#import "ios/chrome/test/earl_grey/chrome_actions.h"
+#import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
+#import "ios/chrome/test/earl_grey/chrome_matchers.h"
+#import "ios/chrome/test/earl_grey/chrome_test_case.h"
+#import "ios/chrome/test/earl_grey/test_switches.h"
+#import "ios/testing/earl_grey/app_launch_configuration.h"
+#import "ios/testing/earl_grey/app_launch_manager.h"
+#import "ios/testing/earl_grey/disabled_test_macros.h"
+#import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/web/public/test/element_selector.h"
+#import "ui/base/l10n/l10n_util.h"
+
+// TODO(crbug.com/561971708): Enable kAssertOnJavaScriptErrors for these tests.
+
+namespace {
+// Ids of elements in chrome://policy
+const char kReloadPoliciesButton[] = "reload-policies";
+const char kViewLogsButton[] = "view-logs";
+const char kMoreActionsButton[] = "more-actions-button";
+
+// Ids of elements in chrome://policy/logs
+const char kRefreshLogsButton[] = "logs-refresh";
+const char kExportLogsButton[] = "logs-dump";
+
+// Ids of elements in chrome://policy/test
+const char kApplyPoliciesButton[] = "apply-policies";
+
+std::vector<std::string> PopulateExpectedPolicy(const std::string& name,
+                                                const std::string& value) {
+  std::vector<std::string> expected_policy;
+
+  // Populate expected policy column and row fields.
+  expected_policy.push_back(name);
+  expected_policy.push_back(value);
+  expected_policy.push_back("Platform");
+  expected_policy.push_back("Machine");
+  expected_policy.push_back("Mandatory");
+  expected_policy.push_back("OK");
+
+  return expected_policy;
+}
+
+std::vector<std::string> PopulateExpectedRestartPolicy(
+    const std::string& name,
+    const std::string& value) {
+  std::vector<std::string> expected_policy;
+
+  // Populate expected policy column and row fields.
+  expected_policy.push_back(name);
+  expected_policy.push_back(value);
+  expected_policy.push_back("Platform");
+  expected_policy.push_back("Machine");
+  expected_policy.push_back("Mandatory");
+  expected_policy.push_back("Restart required");
+
+  return expected_policy;
+}
+
+void VerifyPolicies(
+    const std::vector<std::vector<std::string>>& expected_policies) {
+  // Retrieve the text contents of the policy table cells for all policies.
+  NSString* javascript = @"var entries = getAllPolicyTables();"
+                          "var policies = [];"
+                          "for (var i = 0; i < entries.length; ++i) {"
+                          "  var items = getAllPolicyRows(entries[i]);"
+                          "  for (var j = 0; j < items.length; ++j) {"
+                          "    var children = getAllPolicyRowDivs(items[j]);"
+                          "    var values = [];"
+                          "    for(var k = 0; k < children.length - 1; ++k) {"
+                          "      values.push(children[k].textContent.trim());"
+                          "    }"
+                          "    policies.push(values);"
+                          "  }"
+                          "}"
+                          "JSON.stringify(policies);";
+
+  base::Value policies = [ChromeEarlGrey evaluateJavaScript:javascript];
+  std::optional<base::Value> value_ptr = base::JSONReader::Read(
+      policies.GetString(), base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  GREYAssertTrue(value_ptr, @"Expected policies, but there weren't any.");
+  GREYAssertTrue(value_ptr->is_list(), @"Value is not a list.");
+  const base::ListValue& actual_policies = value_ptr->GetList();
+
+  // Verify that the cells contain the expected strings for all policies.
+  for (size_t i = 0; i < expected_policies.size(); ++i) {
+    const std::vector<std::string> expected_policy = expected_policies[i];
+    const base::ListValue& actual_policy = actual_policies[i].GetList();
+    GREYAssertEqual(expected_policy.size(), actual_policy.size(),
+                    @"Number of fields in the actual and expected policy row "
+                    @"did not match.");
+    for (size_t j = 0; j < expected_policy.size(); ++j) {
+      const std::string* value = actual_policy[j].GetIfString();
+      GREYAssertTrue(value, [NSString stringWithUTF8String:value->c_str()]);
+      if (expected_policy[j] != *value) {
+        GREYAssertEqual(expected_policy[j], *value,
+                        [NSString stringWithUTF8String:value->c_str()]);
+      }
+    }
+  }
+}
+
+ElementSelector* ReloadPoliciesButton() {
+  return [ElementSelector
+      selectorWithCSSSelector:base::StringPrintf(
+          "policy-app%s#%s", kElementSelectorShadowDelimiter,
+          kReloadPoliciesButton)];
+}
+
+ElementSelector* MoreActionsButton() {
+  return [ElementSelector
+      selectorWithCSSSelector:base::StringPrintf(
+          "policy-app%s#%s", kElementSelectorShadowDelimiter,
+          kMoreActionsButton)];
+}
+
+ElementSelector* ViewLogsButton() {
+  return [ElementSelector
+      selectorWithCSSSelector:base::StringPrintf(
+          "policy-app%s#%s", kElementSelectorShadowDelimiter,
+          kViewLogsButton)];
+}
+
+ElementSelector* RefreshLogsButton() {
+  return [ElementSelector
+      selectorWithCSSSelector:base::StringPrintf(
+          "policy-logs-app%s#%s", kElementSelectorShadowDelimiter,
+          kRefreshLogsButton)];
+}
+
+ElementSelector* ExportLogsButton() {
+  return [ElementSelector
+      selectorWithCSSSelector:base::StringPrintf(
+          "policy-logs-app%s#%s", kElementSelectorShadowDelimiter,
+          kExportLogsButton)];
+}
+
+ElementSelector* ApplyPoliciesButton() {
+  return [ElementSelector selectorWithElementID:kApplyPoliciesButton];
+}
+
+// Matcher for "Download" button on Download Manager UI.
+id<GREYMatcher> DownloadButton() {
+  return grey_accessibilityID(
+      @"kDownloadManagerDownloadAccessibilityIdentifier");
+}
+
+// Waits until Download button is shown.
+[[nodiscard]] bool WaitForDownloadButton() {
+  return base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForPageLoadTimeout, ^{
+        NSError* error = nil;
+        [[EarlGrey selectElementWithMatcher:DownloadButton()]
+            assertWithMatcher:grey_interactable()
+                        error:&error];
+        return (error == nil);
+      });
+}
+
+// Waits until Open in... button is shown on file download.
+[[nodiscard]] bool WaitForOpenInButton() {
+  // These downloads usually take longer and need a longer timeout.
+  constexpr base::TimeDelta kLongDownloadTimeout = base::Minutes(1);
+  return base::test::ios::WaitUntilConditionOrTimeout(kLongDownloadTimeout, ^{
+    NSError* error = nil;
+    [[EarlGrey selectElementWithMatcher:chrome_test_util::OpenInButton()]
+        assertWithMatcher:grey_interactable()
+                    error:&error];
+    return (error == nil);
+  });
+}
+
+}  // namespace
+
+// Base test case for chrome://policy WebUI pages.
+@interface PolicyUITestCaseBase : ChromeTestCase
+@end
+
+@implementation PolicyUITestCaseBase
+
+// Prevents this base class from being executed directly by the XCTest runner.
+- (void)invokeTest {
+  if ([self isMemberOfClass:[PolicyUITestCaseBase class]]) {
+    return;
+  }
+  [super invokeTest];
+}
+
+- (void)setUp {
+  [super setUp];
+  GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
+}
+
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config;
+  if ([self isRunningTest:@selector(testPolicyTestPageLoadsCorrectly)]) {
+    // Assign the test environment to be on the Canary channel. This ensures
+    // the test does not run in a stable channel because chrome://policy/test
+    // can only be accessed in non-stable channels.
+    config.additional_args = {"--fake-variations-channel=canary"};
+  }
+  config.features_disabled.push_back(kIOSSaveToDriveSignedOut);
+  return config;
+}
+
+// -----------------------------------------------------------------------------
+// Policy Pages Load
+// -----------------------------------------------------------------------------
+
+// Tests that chrome://policy loads correctly in both regular and incognito tabs
+- (void)testPolicyPageLoadsCorrectly {
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:ReloadPoliciesButton()];
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElement(ReloadPoliciesButton())];
+
+  // Open in new incognito tab.
+  [ChromeEarlGrey openNewIncognitoTab];
+  [ChromeEarlGrey waitForIncognitoTabCount:1];
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:ReloadPoliciesButton()];
+}
+
+// Tests that chrome://policy/logs in both regular and incognito tabs
+- (void)testPolicyLogsPageLoadsCorrectly {
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyLogsURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:RefreshLogsButton()];
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElement(RefreshLogsButton())];
+
+  // Open in new incognito tab.
+  [ChromeEarlGrey openNewIncognitoTab];
+  [ChromeEarlGrey waitForIncognitoTabCount:1];
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyLogsURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:RefreshLogsButton()];
+}
+
+// Tests that chrome://policy/test
+- (void)testPolicyTestPageLoadsCorrectly {
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyTestURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:ApplyPoliciesButton()];
+  [ChromeEarlGrey
+      tapWebStateElementWithID:base::SysUTF8ToNSString(kApplyPoliciesButton)];
+
+  // Open in new incognito tab.
+  [ChromeEarlGrey openNewIncognitoTab];
+  [ChromeEarlGrey waitForIncognitoTabCount:1];
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyTestURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:ApplyPoliciesButton()];
+}
+
+// -----------------------------------------------------------------------------
+// Tests for chrome://policy page
+// -----------------------------------------------------------------------------
+
+// Tests the chrome://policy page when no policies are set.
+- (void)testPolicyPageUnmanaged {
+  // Open the policy page and check if the content is expected.
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+  [ChromeEarlGrey
+      waitForWebStateContainingText:l10n_util::GetStringUTF8(
+                                        IDS_POLICY_NO_POLICIES_SET)];
+}
+
+// Tests the chrome://policy page when there are machine level policies.
+- (void)testPolicyPageManagedWithCBCM {
+  // Fake browser enrollment with an enrollment token that will start chrome
+  // browser cloud management without making network calls.
+  AppLaunchConfiguration config = [self appConfigurationForTestCase];
+  config.additional_args.push_back(
+      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
+  config.additional_args.push_back("-com.apple.configuration.managed");
+
+  config.additional_args.push_back(
+      base::StrCat({"<dict><key>CloudManagementEnrollmentToken</key><string>",
+                    policy::kInvalidEnrollmentToken, "</string></dict>"}));
+  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
+
+  // Open the policy page and check that the enrollment token is shown.
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+  [ChromeEarlGrey waitForWebStateContainingText:l10n_util::GetStringUTF8(
+                                                    IDS_POLICY_STATUS_DEVICE)];
+  [ChromeEarlGrey
+      waitForWebStateContainingText:
+          l10n_util::GetStringUTF8(IDS_POLICY_LABEL_MACHINE_ENROLLMENT_TOKEN)];
+}
+
+// Tests the chrome://policy page when there are policies set.
+- (void)testPoliciesShowOnPage {
+  // Set policies
+  policy_test_utils::MergePolicy(false, "DefaultSearchProviderEnabled");
+  policy_test_utils::MergePolicy(1, "IncognitoModeAvailability");
+
+  // Navigate to chrome://policy.
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+
+  // Verify that the policy set is shown on the page.
+  std::vector<std::vector<std::string>> expected_policies;
+  expected_policies.push_back(
+      PopulateExpectedPolicy("DefaultSearchProviderEnabled", "false"));
+  expected_policies.push_back(
+      PopulateExpectedRestartPolicy("IncognitoModeAvailability", "1"));
+  VerifyPolicies(expected_policies);
+}
+
+// Tests that a policy with a complex value (list of dictionaries) is displayed
+// without escape characters.
+- (void)testComplexPolicyShowsWithoutEscaping {
+  // Set a complex policy.
+  base::DictValue bookmark;
+  bookmark.Set("name", "Google");
+  bookmark.Set("url", "https://google.com");
+
+  base::ListValue bookmarkList;
+  bookmarkList.Append(std::move(bookmark));
+
+  policy_test_utils::SetPolicy(base::Value(std::move(bookmarkList)),
+                               "ManagedBookmarks");
+
+  // Navigate to chrome://policy.
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+
+  // Verify that the policy set is shown on the page with the correct value.
+  std::vector<std::vector<std::string>> expected_policies;
+  expected_policies.push_back(PopulateExpectedPolicy(
+      "ManagedBookmarks", R"([{"name":"Google","url":"https://google.com"}])"));
+  VerifyPolicies(expected_policies);
+}
+
+// Tests that the "Chrome Policies" table is visible on the page.
+- (void)testChromePoliciesTableIsVisible {
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+  [ChromeEarlGrey waitForWebStateContainingText:"Chrome Policies"];
+}
+
+// Tests that the "Policy Precedence" table is visible on the page.
+- (void)testPolicyPrecedenceTableIsVisible {
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+  [ChromeEarlGrey waitForWebStateContainingText:"Policy Precedence"];
+}
+
+// Tests that the "View Logs" button successfully redirects to
+// chrome://policy/logs.
+- (void)testViewLogsRedirectsToLogsPage {
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+  // Click the dropdown and wait until the button shows.
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElement(MoreActionsButton())];
+  // Click "View Logs"
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElement(ViewLogsButton())];
+  // Verify that the logs page is opened.
+  [ChromeEarlGrey waitForWebStateContainingElement:RefreshLogsButton()];
+}
+
+// Tests that status is updated when policies are updated.
+- (void)testStatusUpdatedOnPolicyUpdate {
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:ReloadPoliciesButton()];
+
+  NSString* script =
+      @"(async () => {"
+       "  const {BrowserProxy} = await import('./browser_proxy.js');"
+       "  window.statusUpdatedData = null;"
+       "  BrowserProxy.listenForStatusUpdated((status) => {"
+       "    window.statusUpdatedData = status;"
+       "  });"
+       "  window.listenerReady = true;"
+       "})();"
+       "void 0;";
+  [ChromeEarlGrey evaluateJavaScriptForSideEffect:script];
+
+  bool listenerReady = base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForPageLoadTimeout, ^{
+        base::Value res = [ChromeEarlGrey
+            evaluateJavaScript:@"window.listenerReady === true"];
+        return res.is_bool() && res.GetBool();
+      });
+  GREYAssertTrue(listenerReady, @"Failed to set up status updated listener.");
+
+  base::Value initialReceived =
+      [ChromeEarlGrey evaluateJavaScript:@"window.statusUpdatedData === null"];
+  GREYAssertTrue(initialReceived.is_bool() && initialReceived.GetBool(),
+                 @"Status update received prematurely.");
+
+  // Update a policy to trigger OnPolicyUpdated and SendStatus.
+  policy_test_utils::SetPolicy(false, "DefaultSearchProviderEnabled");
+
+  bool statusUpdated = base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForPageLoadTimeout, ^{
+        base::Value res = [ChromeEarlGrey
+            evaluateJavaScript:@"window.statusUpdatedData !== null"];
+        return res.is_bool() && res.GetBool();
+      });
+  GREYAssertTrue(statusUpdated,
+                 @"BrowserProxy failed to receive StatusUpdated event.");
+
+  // Verify that the received status is a valid dictionary/object.
+  base::Value verifyResult = [ChromeEarlGrey
+      evaluateJavaScript:@"typeof window.statusUpdatedData === 'object' && "
+                         @"window.statusUpdatedData !== null"];
+  GREYAssertTrue(verifyResult.is_bool() && verifyResult.GetBool(),
+                 @"Status updated event did not provide a valid object.");
+
+  policy_test_utils::ClearPolicies();
+}
+
+// -----------------------------------------------------------------------------
+// Tests for chrome://policy/logs page
+// -----------------------------------------------------------------------------
+
+// Tests that the export button successfully downloads a file.
+- (void)testExportLogsToJson {
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    // TODO(crbug.com/520106708): Failing on ipad device.
+    EARL_GREY_TEST_SKIPPED(@"Disabled on iPad");
+  }
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyLogsURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:ExportLogsButton()];
+  // Click "Export Logs to JSON" button
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElement(ExportLogsButton())];
+  // Verify the download button at the bottom shows.
+  GREYAssert(WaitForDownloadButton(), @"Download button did not show up");
+  [[EarlGrey selectElementWithMatcher:DownloadButton()]
+      performAction:grey_tap()];
+  GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
+}
+
+// Tests that the version information displayed is correct.
+- (void)testVersionInformationIsCorrect {
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyLogsURL)];
+  // Verify that app versionis present on the page.
+  const std::string version(version_info::GetVersionNumber());
+  const std::string last_change(version_info::GetLastChange());
+
+  [ChromeEarlGrey waitForWebStateContainingText:version];
+  [ChromeEarlGrey waitForWebStateContainingText:last_change];
+  [ChromeEarlGrey waitForWebStateContainingText:"iOS"];
+}
+
+// Tests that policy logs emitted from C++ are visible in the logs page.
+- (void)testPolicyLogsVisibleOnPage {
+  [PolicyAppInterface clearPolicyLogs];
+
+  NSString* testMessage = @"Test policy log message from C++";
+  [PolicyAppInterface logErrorPolicy:testMessage];
+
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyLogsURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:RefreshLogsButton()];
+  [ChromeEarlGrey
+      waitForWebStateContainingText:base::SysNSStringToUTF8(testMessage)];
+}
+
+// Tests that clicking the refresh button updates logs fetched by the logs page.
+- (void)testPolicyLogsRefresh {
+  [PolicyAppInterface clearPolicyLogs];
+
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyLogsURL)];
+  [ChromeEarlGrey waitForWebStateContainingElement:RefreshLogsButton()];
+
+  NSString* testMessage = @"Test policy log message after refresh";
+  [PolicyAppInterface logErrorPolicy:testMessage];
+
+  // Click refresh button in WebUI.
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElement(RefreshLogsButton())];
+
+  [ChromeEarlGrey
+      waitForWebStateContainingText:base::SysNSStringToUTF8(testMessage)];
+}
+
+// -----------------------------------------------------------------------------
+// Tests for chrome://policy/test
+// -----------------------------------------------------------------------------
+// TODO(crbug.com/346527212): Test chrome://policy/test buttons.
+
+@end
+
+// -----------------------------------------------------------------------------
+// Parameterized test cases
+// -----------------------------------------------------------------------------
+
+// MACRO to force Xcode's Test Navigator to see the inherited tests.
+#define MULTIPLEX_TESTS                            \
+  -(void)testPolicyPageLoadsCorrectly {            \
+    [super testPolicyPageLoadsCorrectly];          \
+  }                                                \
+  -(void)testPolicyLogsPageLoadsCorrectly {        \
+    [super testPolicyLogsPageLoadsCorrectly];      \
+  }                                                \
+  -(void)testPolicyTestPageLoadsCorrectly {        \
+    [super testPolicyTestPageLoadsCorrectly];      \
+  }                                                \
+  -(void)testPolicyPageUnmanaged {                 \
+    [super testPolicyPageUnmanaged];               \
+  }                                                \
+  -(void)testPoliciesShowOnPage {                  \
+    [super testPoliciesShowOnPage];                \
+  }                                                \
+  -(void)testComplexPolicyShowsWithoutEscaping {   \
+    [super testComplexPolicyShowsWithoutEscaping]; \
+  }                                                \
+  -(void)testChromePoliciesTableIsVisible {        \
+    [super testChromePoliciesTableIsVisible];      \
+  }                                                \
+  -(void)testPolicyPrecedenceTableIsVisible {      \
+    [super testPolicyPrecedenceTableIsVisible];    \
+  }                                                \
+  -(void)testViewLogsRedirectsToLogsPage {         \
+    [super testViewLogsRedirectsToLogsPage];       \
+  }                                                \
+  -(void)testExportLogsToJson {                    \
+    [super testExportLogsToJson];                  \
+  }                                                \
+  -(void)testVersionInformationIsCorrect {         \
+    [super testVersionInformationIsCorrect];       \
+  }                                                \
+  -(void)testPolicyLogsVisibleOnPage {             \
+    [super testPolicyLogsVisibleOnPage];           \
+  }                                                \
+  -(void)testPolicyLogsRefresh {                   \
+    [super testPolicyLogsRefresh];                 \
+  }                                                \
+  -(void)testStatusUpdatedOnPolicyUpdate {         \
+    [super testStatusUpdatedOnPolicyUpdate];       \
+  }
+
+@interface PolicyUIMojoDisabledTestCase : PolicyUITestCaseBase
+@end
+
+@implementation PolicyUIMojoDisabledTestCase
+
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  config.features_disabled.push_back(
+      policy::features::kPolicyPageMojoMigration);
+  return config;
+}
+
+- (void)testPolicyPageManagedWithCBCM {
+  // TODO(crbug.com/40897784): Enable for both versions of the test, once the
+  // required logic is implemented.
+  [super testPolicyPageManagedWithCBCM];
+}
+
+MULTIPLEX_TESTS
+
+@end
+
+@interface PolicyUIMojoEnabledTestCase : PolicyUITestCaseBase
+@end
+
+@implementation PolicyUIMojoEnabledTestCase
+
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  config.features_enabled.push_back(policy::features::kPolicyPageMojoMigration);
+  return config;
+}
+
+- (void)testPolicyPageManagedWithCBCM {
+  // TODO(crbug.com/40897784): Re-enable once the required logic is implemented.
+  EARL_GREY_TEST_DISABLED(@"Disabled for Mojo migration");
+}
+
+MULTIPLEX_TESTS
+
+@end

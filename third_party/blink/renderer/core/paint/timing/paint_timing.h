@@ -1,0 +1,449 @@
+// Copyright 2015 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_PAINT_TIMING_H_
+#define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_PAINT_TIMING_H_
+
+#include <array>
+#include <memory>
+
+#include "base/feature_list.h"
+#include "base/functional/function_ref.h"
+#include "base/gtest_prod_util.h"
+#include "base/time/time.h"
+#include "components/viz/common/frame_timing_details.h"
+#include "third_party/blink/public/common/input/web_input_event.h"
+#include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
+#include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/paint/paint_event.h"
+#include "third_party/blink/renderer/core/paint/timing/first_meaningful_paint_detector.h"
+#include "third_party/blink/renderer/core/paint/timing/paint_timing_callbacks.h"
+#include "third_party/blink/renderer/core/timing/animation_frame_timing_info.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_deque.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/supplementable.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/hash_set.h"
+
+namespace blink {
+class AnimationFrameTimingInfo;
+struct DOMPaintTimingInfo;
+struct ElementTimingInfo;
+class LargestContentfulPaintManager;
+class ImageRecord;
+class ImageElementTiming;
+class LocalFrame;
+class PaintTimingClient;
+class PaintTimingDetector;
+class TextElementTiming;
+class TextRecord;
+
+CORE_EXPORT BASE_DECLARE_FEATURE(kPaintTimingWaitForPresentationFrameIndex);
+
+// PaintTiming is responsible for tracking paint-related timings for a given
+// document.
+class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
+                                      public Supplement<Document> {
+  using RequestAnimationFrameTimesAfterBackForwardCacheRestore = std::array<
+      base::TimeTicks,
+      WebPerformanceMetricsForReporting::
+          kRequestAnimationFramesToRecordAfterBackForwardCacheRestore>;
+
+ public:
+  using ReportTimeCallback =
+      base::OnceCallback<void(const viz::FrameTimingDetails&)>;
+
+  // `CallbackManager` is a unit-test specific interface to capture callbacks so
+  // that the lifecycle can be be controlled synchronously.
+  class CallbackManager : public GarbageCollectedMixin {
+   public:
+    virtual void RegisterCallback(ReportTimeCallback) = 0;
+  };
+
+  struct PaintTimingInfo {
+    // https://w3c.github.io/paint-timing/#paint-timing-info-rendering-update-end-time
+    base::TimeTicks rendering_update_end_time;
+
+    // https://w3c.github.io/paint-timing/#paint-timing-info-implementation-defined-presentation-time
+    base::TimeTicks presentation_time;
+  };
+
+  static const char kSupplementName[];
+
+  explicit PaintTiming(Document&);
+  PaintTiming(const PaintTiming&) = delete;
+  PaintTiming& operator=(const PaintTiming&) = delete;
+  ~PaintTiming() = default;
+
+  static PaintTiming& From(Document&);
+  static const PaintTiming* From(const Document&);
+
+  // Mark*() methods record the time for the given paint event and queue a
+  // presentation promise to record the |first_*_presentation_| timestamp. These
+  // methods do nothing (early return) if a time has already been recorded for
+  // the given paint event.
+  void MarkFirstPaint();
+
+  // MarkFirstImagePaint, and MarkFirstContentfulPaint
+  // will also record first paint if first paint hasn't been recorded yet.
+  void MarkFirstContentfulPaint();
+
+  // MarkFirstImagePaint will also record first contentful paint if first
+  // contentful paint hasn't been recorded yet.
+  void MarkFirstImagePaint();
+
+  // MarkFirstEligibleToPaint records the first time that the frame is not
+  // throttled and so is eligible to paint. A null value indicates throttling.
+  void MarkFirstEligibleToPaint();
+
+  // MarkIneligibleToPaint resets the paint eligibility timestamp to null.
+  // A null value indicates throttling. This call is ignored if a first
+  // contentful paint has already been recorded.
+  void MarkIneligibleToPaint();
+
+  void SetFirstMeaningfulPaintCandidate(base::TimeTicks timestamp);
+  void SetFirstMeaningfulPaint(
+      base::TimeTicks presentation_time,
+      FirstMeaningfulPaintDetector::HadUserInput had_input);
+  void NotifyPaint(bool is_first_paint, bool text_painted, bool image_painted);
+  void NotifyPaintFinished();
+  void NotifyInputEvent(WebInputEvent::Type);
+  void NotifyScroll(mojom::blink::ScrollType);
+
+  // The getters below return monotonically-increasing seconds, or zero if the
+  // given paint event has not yet occurred. See the comments for
+  // monotonicallyIncreasingTime in wtf/Time.h for additional details.
+
+  // Returns the first time that anything was painted for the
+  // current document after a hard navigation. This is not considering soft
+  // navigations.
+  base::TimeTicks FirstPaintForMetrics() const {
+    return first_paint_presentation_for_ukm_;
+  }
+
+  // Times when the first paint happens after the page is restored from the
+  // back-forward cache. If the element value is zero time tick, the first paint
+  // event did not happen for that navigation.
+  Vector<base::TimeTicks> FirstPaintsAfterBackForwardCacheRestore() const {
+    return first_paints_after_back_forward_cache_restore_presentation_;
+  }
+
+  Vector<RequestAnimationFrameTimesAfterBackForwardCacheRestore>
+  RequestAnimationFramesAfterBackForwardCacheRestore() const {
+    return request_animation_frames_after_back_forward_cache_restore_;
+  }
+
+  // Returns the first time that 'contentful' content was painted in the current
+  // document after a hard navigation. For instance, the first time that text or
+  // image content was painted after the user landed on the page.
+  base::TimeTicks FirstContentfulPaint() const {
+    return first_contentful_paint_presentation_;
+  }
+
+  base::TimeTicks FirstContentfulPaintRenderedButNotPresentedAsMonotonicTime()
+      const {
+    return paint_details_.first_contentful_paint_;
+  }
+
+  // FirstImagePaint returns the first time that image content was painted.
+  base::TimeTicks FirstImagePaint() const {
+    return paint_details_.first_image_paint_presentation_;
+  }
+
+  base::TimeTicks FirstImagePaintRenderedButNotPresentedAsMonotonicTime()
+      const {
+    return paint_details_.first_image_paint_;
+  }
+
+  // FirstEligibleToPaint returns the first time that the frame is not
+  // throttled and is eligible to paint. A null value indicates throttling.
+  base::TimeTicks FirstEligibleToPaint() const {
+    return first_eligible_to_paint_;
+  }
+
+  // FirstMeaningfulPaint returns the first time that page's primary content
+  // was painted.
+  base::TimeTicks FirstMeaningfulPaint() const {
+    return first_meaningful_paint_presentation_;
+  }
+
+  // FirstMeaningfulPaintCandidate indicates the first time we considered a
+  // paint to qualify as the potentially first meaningful paint. Unlike
+  // firstMeaningfulPaint, this signal is available in real time, but it may be
+  // an optimistic (i.e., too early) estimate.
+  base::TimeTicks FirstMeaningfulPaintCandidate() const {
+    return first_meaningful_paint_candidate_;
+  }
+
+  base::TimeTicks FirstContentfulPaintPresentation() const {
+    return paint_details_.first_contentful_paint_presentation_;
+  }
+
+  base::TimeTicks FirstPaintRendered() const {
+    return paint_details_.first_paint_;
+  }
+
+  FirstMeaningfulPaintDetector& GetFirstMeaningfulPaintDetector() {
+    return *fmp_detector_;
+  }
+
+  Document* GetDocument() { return GetSupplementable(); }
+
+  void RegisterNotifyPresentationTime(ReportTimeCallback);
+  void ReportPresentationTime(PaintEvent,
+                              base::TimeTicks rendering_update_end_time,
+                              const viz::FrameTimingDetails&);
+  void RecordFirstContentfulPaintTimingMetrics(const viz::FrameTimingDetails&);
+  void ReportFirstPaintAfterBackForwardCacheRestorePresentationTime(
+      wtf_size_t index,
+      const viz::FrameTimingDetails&);
+
+  void OnRestoredFromBackForwardCache();
+
+  void MarkPaintTiming();
+
+  void Trace(Visitor*) const override;
+
+  // Returns the `LargestContentfulPaintManager` associated with this
+  // `PaintTiming`. Returns null if hard LCP is no longer being recorded, e.g.
+  // after first input.
+  LargestContentfulPaintManager* GetLargestContentfulPaintManager() {
+    return largest_contentful_paint_manager_;
+  }
+
+  // Sets the `CallbackManager` to handle presentation time callbacks. Used for
+  // unit tests.
+  void SetCallbackManagerForTest(CallbackManager* manager) {
+    callback_manager_ = manager;
+  }
+
+  // TODO(crbug.com/503420427): Consider removing this and proxying through
+  // PaintTiming.
+  PaintTimingDetector& GetPaintTimingDetector() {
+    return *paint_timing_detector_.Get();
+  }
+
+  ImageElementTiming* GetImageElementTiming() { return image_element_timing_; }
+
+  // Adds a `PaintTimingClient` to observe contentful paints. The client must
+  // not have been previously added.
+  void AddClient(PaintTimingClient*);
+
+  // Removes a previously added `PaintTimingClient`. The client must have been
+  // previously added.
+  void RemoveClient(PaintTimingClient*);
+
+  // Iterates over the `PaintTimingClient`s invoking the given function. Must
+  // not add or remove clients.
+  void ForEachClient(base::FunctionRef<void(PaintTimingClient*)>);
+
+ private:
+  friend class RecodingTimeAfterBackForwardCacheRestoreFrameCallback;
+
+  struct PendingPaintTimingRecord {
+    HashSet<PaintEvent> paint_events;
+    base::TimeTicks rendering_update_end_time;
+  };
+
+  // Struct holding data from the various paint timing detectors that is
+  // captured at paint time and used by the associated presentation callback.
+  struct PresentationCallbackData
+      : public GarbageCollected<PresentationCallbackData> {
+    PresentationCallbackData(
+        uint32_t id,
+        const PendingPaintTimingRecord&,
+        AnimationFrameTimingInfo*,
+        HeapVector<Member<TextRecord>> text_records,
+        HeapVector<Member<ImageRecord>> image_records,
+        HeapVector<Member<ElementTimingInfo>> image_element_timings,
+        HeapVector<Member<ImageRecord>> animated_images);
+
+    bool HasPaintTimingInfo() const { return paint_timing_info.has_value(); }
+
+    bool ShouldNotifyClientsOnFramePresented() const {
+      return !text_records.empty() || !image_records.empty() ||
+             !image_element_timings.empty();
+    }
+
+    void Trace(Visitor*) const;
+
+    // Values set at paint time.
+    //
+    // Note: `paint_timing_record` and `animation_frame_timing_info` are ignored
+    // unless `kPaintTimingWaitForPresentationFrameIndex` is enabled.
+    const uint32_t id;
+    const PendingPaintTimingRecord paint_timing_record;
+    const Member<AnimationFrameTimingInfo> animation_frame_timing_info;
+    const HeapVector<Member<TextRecord>> text_records;
+    const HeapVector<Member<ImageRecord>> image_records;
+    const HeapVector<Member<ElementTimingInfo>> image_element_timings;
+    const HeapVector<Member<ImageRecord>> animated_images;
+
+    // Values set at presentation time.
+    base::TimeTicks raw_presentation_timestamp;
+    std::optional<DOMPaintTimingInfo> paint_timing_info;
+
+    // The presentation timestamp of the first arriving presentation feedback
+    // with id greater or equal to `id`. This is only used when
+    // kPaintTimingWaitForPresentationFrameIndex is enabled, and it represents
+    // the presentation timestamp that would be used without the feature
+    // enabled.
+    base::TimeTicks legacy_presentation_time;
+  };
+
+  LocalFrame* GetFrame() const;
+  void NotifyPaintTimingChanged();
+
+  void MarkPaintTimingInternal();
+
+  // Set*() set the timing for the given paint event to the given timestamp if
+  // the value is currently zero, and queue a presentation promise to record the
+  // |first_*_presentation_| timestamp. These methods can be invoked from other
+  // Mark*() or Set*() methods to make sure that first paint is marked as part
+  // of marking first contentful paint, or that first contentful paint is marked
+  // as part of marking first text/image paint, for example.
+  void SetFirstPaint(base::TimeTicks stamp);
+
+  // setFirstContentfulPaint will also set first paint time if first paint
+  // time has not yet been recorded.
+  void SetFirstContentfulPaint(base::TimeTicks stamp);
+
+  // Set*Presentation() are called when the presentation promise is fulfilled
+  // and the presentation timestamp is available. These methods will record
+  // trace events, update Web Perf API (FP and FCP only), and notify that paint
+  // timing has changed, which triggers UMAs and UKMS. |stamp| is the
+  // presentation timestamp used for tracing, UMA, UKM, and Web Perf API.
+  void SetFirstPaintPresentation(const PaintTimingInfo&);
+  void SetFirstContentfulPaintPresentation(const PaintTimingInfo&);
+  void SetFirstImagePaintPresentation(base::TimeTicks stamp);
+
+  // When quickly navigating back and forward between the pages in the cache
+  // paint events might race with navigations. Pass explicit bfcache restore
+  // index to avoid confusing the data from different navigations.
+  void SetFirstPaintAfterBackForwardCacheRestorePresentation(
+      base::TimeTicks stamp,
+      wtf_size_t index);
+  void SetRequestAnimationFrameAfterBackForwardCacheRestore(wtf_size_t index,
+                                                            size_t count);
+
+  void Mark(PaintEvent);
+  void RegisterNotifyFirstPaintAfterBackForwardCacheRestorePresentationTime(
+      wtf_size_t index);
+
+  // Flushes pending paint timing entries, e.g. LCP and ICP entries, element
+  // timings, LoAF entries, etc., after the frame has been presented. If
+  // coarsening is required, then this runs after waiting for the coarsened time
+  // to been reached. Corresponds to step 10 of
+  // https://w3c.github.io/paint-timing/#mark-paint-timing.
+  //
+  // TODO(crbug.com/549911078: When kPaintTimingWaitForPresentationFrameIndex is
+  // disabled, this callback runs at presentation time instead of
+  // `SetPresentationTimeAndMaybeFlushPaintTimingsOnFramePresented()` and
+  // `FlushPaintTimingsOnFramePresented()`. Remove this variant when that
+  // feature is fully launched.
+  void FlushPaintTimingsOnFramePresentedCallback(
+      uint32_t id,
+      const PendingPaintTimingRecord&,
+      AnimationFrameTimingInfo*,
+      const base::TimeTicks& raw_presentation_timestamp,
+      const DOMPaintTimingInfo&);
+
+  // Sets the paint timing info for the `PresentationCallbackData` associated
+  // with `id` and flushes any `PresentationCallbackData` whose paint timing
+  // info is set, in frame index order.
+  //
+  // Note: this is only used when kPaintTimingWaitForPresentationFrameIndex is
+  // enabled. When disabled, `FlushPaintTimingsOnFramePresentedCallback()` is
+  // the entry point for processing presentation feedback.
+  void SetPresentationTimeAndMaybeFlushPaintTimingsOnFramePresented(
+      uint32_t id,
+      const base::TimeTicks& raw_presentation_timestamp,
+      const DOMPaintTimingInfo&);
+
+  // Flushes pending paint timing entries for a single frame, e.g. LCP and ICP
+  // entries, element timings, LoAF entries, etc., after the frame has been
+  // presented. If coarsening is required, then this runs after waiting for the
+  // coarsened time to been reached. Corresponds to step 10 of
+  // https://w3c.github.io/paint-timing/#mark-paint-timing.
+  //
+  // Note: this is only used when kPaintTimingWaitForPresentationFrameIndex is
+  // enabled. When disabled, `FlushPaintTimingsOnFramePresentedCallback()` is
+  // the entry point for processing presentation feedback.
+  void FlushPaintTimingsOnFramePresented(PresentationCallbackData&);
+
+  void OnInputOrScroll();
+
+  // Propagates the paint timing info and presentation time to the
+  // `PaintTimingRecord`s owned by the `PresentationCallbackData`.
+  void SetPaintTimingInfoForPaintTimingRecords(
+      PresentationCallbackData&,
+      const DOMPaintTimingInfo&,
+      base::TimeTicks raw_presentation_timestamp);
+
+  Vector<base::TimeTicks>
+      first_paints_after_back_forward_cache_restore_presentation_;
+  Vector<RequestAnimationFrameTimesAfterBackForwardCacheRestore>
+      request_animation_frames_after_back_forward_cache_restore_;
+  struct PaintDetails {
+    // TODO(crbug/738235): Non first_*_presentation_ variables are only being
+    // tracked to compute deltas for reporting histograms and should be removed
+    // once we confirm the deltas and discrepancies look reasonable.
+    base::TimeTicks first_paint_;
+    base::TimeTicks first_paint_presentation_;
+    base::TimeTicks first_image_paint_;
+    base::TimeTicks first_image_paint_presentation_;
+    base::TimeTicks first_contentful_paint_;
+    base::TimeTicks first_contentful_paint_presentation_;
+  };
+
+  PaintDetails& GetRelevantPaintDetails() { return paint_details_; }
+
+  DOMPaintTimingInfo ToDOMPaintTimingInfo(const PaintTimingInfo&) const;
+
+  PaintDetails paint_details_;
+  // Timestamps used for UKM reporting.
+  base::TimeTicks first_paint_presentation_for_ukm_;
+  base::TimeTicks first_contentful_paint_presentation_;
+  base::TimeTicks first_meaningful_paint_presentation_;
+  base::TimeTicks first_meaningful_paint_candidate_;
+  base::TimeTicks first_eligible_to_paint_;
+  base::TimeTicks last_rendering_update_end_time_;
+
+  base::TimeTicks lcp_mouse_over_dispatch_time_;
+
+  Member<PaintTimingDetector> paint_timing_detector_;
+  Member<ImageElementTiming> image_element_timing_;
+  Member<TextElementTiming> text_element_timing_;
+  Member<LargestContentfulPaintManager> largest_contentful_paint_manager_;
+  Member<FirstMeaningfulPaintDetector> fmp_detector_;
+  // The callback ID for requestAnimationFrame to record its time after the page
+  // is restored from the back-forward cache.
+  int raf_after_bfcache_restore_measurement_callback_id_ = 0;
+
+  HashSet<PaintEvent> pending_paint_events_;
+
+  // Set in some unit tests.
+  Member<CallbackManager> callback_manager_;
+
+  // List of `PaintTimingClient` observers. We could use HeapObserverList for
+  // this, but in practice the list should be small (3-4 observers at most), so
+  // we don't need to optimize for removal.
+  HeapVector<Member<PaintTimingClient>> clients_;
+  // Used to enforce `clients_` is not modified during iteration.
+  bool allow_client_modifications_ = true;
+
+  // A strictly increasing ID associated with `PresentationCallbackData`,
+  // incremented when the data is created.
+  uint32_t next_presentation_callback_data_id_ = 1;
+
+  // Pending `PresentationCallbackData` computed during paint and used in the
+  // corresponding presentation callback.
+  HeapDeque<Member<PresentationCallbackData>> pending_presentation_data_;
+};
+
+}  // namespace blink
+
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_PAINT_TIMING_H_

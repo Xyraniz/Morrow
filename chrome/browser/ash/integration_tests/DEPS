@@ -1,0 +1,8 @@
+include_rules = [
+  "-chrome",
+
+  "+chrome/browser/ash/login/test",
+  "+chrome/browser/ui/browser_window.h",
+  "+chrome/common/chrome_paths.h",
+  "+chrome/test/base",
+]

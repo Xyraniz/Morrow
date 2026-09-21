@@ -1,0 +1,130 @@
+# Copyright 2022 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+assert(is_chromeos)
+
+source_set("quick_answers") {
+  sources = [
+    "quick_answers_controller_impl.cc",
+    "quick_answers_controller_impl.h",
+    "quick_answers_state_ash.cc",
+    "quick_answers_state_ash.h",
+    "quick_answers_ui_controller.cc",
+    "quick_answers_ui_controller.h",
+  ]
+
+  configs += [ "//build/config/compiler:wexit_time_destructors" ]
+
+  public_deps = [
+    "//chrome/browser:browser_public_dependencies",
+    "//chrome/browser/ui/ash/quick_answers/ui",
+  ]
+
+  # quick_answers_ui_controller.h/.cc includes headers owned by the ui:
+  # target above, while its .cc files include quick_answers_ui_controller.h
+  # back -- a genuine bidirectional pair.
+  allow_circular_includes_from = [ "//chrome/browser/ui/ash/quick_answers/ui" ]
+
+  deps = [
+    "//ash",
+    "//chrome/browser/ash/magic_boost",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_manager",
+    "//chrome/browser/ui/ash/editor_menu:utils",
+    "//chrome/browser/ui/ash/read_write_cards",
+    "//chrome/browser/ui/color:color_headers",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/experiences/settings_ui",
+    "//chromeos/components/kiosk",
+    "//chromeos/components/magic_boost/public/cpp/views",
+    "//chromeos/components/quick_answers",
+    "//chromeos/components/quick_answers/public/cpp",
+    "//chromeos/components/quick_answers/public/cpp:constants",
+    "//chromeos/components/quick_answers/public/cpp:prefs",
+    "//chromeos/constants",
+    "//chromeos/strings:strings_grit",
+    "//chromeos/ui/vector_icons",
+    "//components/account_id",
+    "//components/application_locale_storage",
+    "//components/language/core/browser",
+    "//components/omnibox/browser:vector_icons",
+    "//components/prefs",
+    "//content/public/browser",
+    "//ui/views/controls/webview",
+    "//ui/wm",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [
+    "quick_answers_controller_unittest.cc",
+    "quick_answers_state_ash_unittest.cc",
+    "quick_answers_ui_controller_unittest.cc",
+  ]
+
+  deps = [
+    ":quick_answers",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/ui:settings_window_manager_chromeos",
+    "//chrome/browser/ui/ash/quick_answers/test:mock_quick_answers_client",
+    "//chrome/browser/ui/ash/quick_answers/test:test_support",
+    "//chrome/browser/ui/ash/quick_answers/ui:unit_tests",
+    "//chrome/test:test_support",
+    "//chromeos/components/kiosk",
+    "//chromeos/components/kiosk:test_support",
+    "//chromeos/components/magic_boost/public/cpp",
+    "//chromeos/components/magic_boost/test:fake_magic_boost_state",
+    "//chromeos/components/quick_answers",
+    "//chromeos/components/quick_answers:test_support",
+    "//chromeos/components/quick_answers/public/cpp",
+    "//chromeos/components/quick_answers/public/cpp:constants",
+    "//chromeos/components/quick_answers/public/cpp:prefs",
+    "//chromeos/constants",
+    "//chromeos/strings:strings_grit",
+    "//testing/gmock",
+    "//testing/gtest",
+    "//ui/base",
+    "//ui/events:test_support",
+    "//ui/views",
+  ]
+}
+
+source_set("browser_tests") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  sources = [
+    "quick_answers_browsertest.cc",
+    "quick_answers_browsertest_base.cc",
+    "quick_answers_browsertest_base.h",
+    "quick_answers_controller_browsertest.cc",
+  ]
+
+  deps = [
+    ":quick_answers",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/ash/accessibility:test_support",
+    "//chrome/browser/ui/ash/quick_answers/test:mock_quick_answers_client",
+    "//chrome/browser/ui/ash/quick_answers/ui:browser_tests",
+    "//chrome/browser/ui/ash/read_write_cards",
+    "//chrome/test:test_support",
+    "//chromeos/components/kiosk",
+    "//chromeos/components/kiosk:test_support",
+    "//chromeos/components/magic_boost/public/cpp",
+    "//chromeos/components/quick_answers",
+    "//chromeos/components/quick_answers:test_support",
+    "//chromeos/components/quick_answers/public/cpp",
+    "//chromeos/components/quick_answers/public/cpp:constants",
+    "//chromeos/components/quick_answers/public/cpp:prefs",
+    "//chromeos/strings",
+    "//content/test:test_support",
+    "//testing/gtest",
+    "//ui/events:test_support",
+    "//ui/views",
+  ]
+}

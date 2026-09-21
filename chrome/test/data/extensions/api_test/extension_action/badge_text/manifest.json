@@ -1,0 +1,10 @@
+{
+  "action": {},
+  "background": {
+    "service_worker": "background.js"
+  },
+  "description": "An extension that tests length limit for the badge text on extension icon.",
+  "manifest_version": 3,
+  "name": "Action Badge Text Test Extension",
+  "version": "1.0"
+}

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<body>
+<script src="../resources/testharness.js"></script>
+<script src="../resources/testharnessreport.js"></script>
+<script src="resources/gamepad-helpers.js"></script>
+<script>
+
+promise_test(async (t) => {
+    assert_inherits(navigator, 'getGamepads');
+    assert_own_property(window, 'GamepadEvent');
+
+    let gamepads = navigator.getGamepads();
+    assert_equals(gamepads.length, MAX_GAMEPADS, 'gamepads.length');
+    assert_equals(gamepads[0], null, 'gamepads[0]');
+
+    let connectPromise = ongamepadconnected(t);
+    gamepadController.connect(0);
+    gamepadController.setId(0, "MockStick 3000");
+    gamepadController.setButtonCount(0, 1);
+    gamepadController.setAxisCount(0, 1);
+    gamepadController.dispatchConnected(0);
+    await connectPromise;
+
+    let gamepad = navigator.getGamepads()[0];
+    assert_not_equals(gamepad, null, 'gamepad');
+    assert_true(gamepad.connected, 'gamepad.connected');
+    assert_class_string(gamepad, 'Gamepad', 'gamepad');
+    assert_class_string(gamepad.id, 'String', 'gamepad.id');
+    assert_class_string(gamepad.connected, 'Boolean', 'gamepad.connected');
+    assert_class_string(gamepad.index, 'Number', 'gamepad.index');
+    assert_class_string(gamepad.timestamp, 'Number', 'gamepad.timestamp');
+    assert_class_string(gamepad.axes, 'Array', 'gamepad.axes');
+    assert_class_string(gamepad.axes[0], 'Number', 'gamepad.axes[0]');
+    assert_class_string(gamepad.buttons, 'Array', 'gamepad.buttons');
+    assert_class_string(gamepad.buttons[0].pressed, 'Boolean', 'gamepad.buttons[0].pressed');
+    assert_class_string(gamepad.buttons[0].value, 'Number', 'gamepad.buttons[0].value');
+    assert_class_string(gamepad.mapping, 'String', 'gamepad.mapping');
+    assert_true(Object.isFrozen(gamepad.axes), 'gamepad.axes frozen');
+    assert_true(Object.isFrozen(gamepad.buttons), 'gamepad.buttons frozen');
+
+    // Verify that every available slot can be used at the same time and that
+    // input from each gamepad is exposed through the API.
+    gamepadController.setButtonData(0, 0, 1 / MAX_GAMEPADS);
+    const remainingConnectPromises = [];
+    for (let index = 1; index < MAX_GAMEPADS; ++index) {
+        remainingConnectPromises.push(
+            onGamepadEventWithIndex('gamepadconnected', index));
+        gamepadController.connect(index);
+        gamepadController.setId(index, "MockStick 3000");
+        gamepadController.setButtonCount(index, 1);
+        gamepadController.setAxisCount(index, 1);
+        gamepadController.setButtonData(
+            index, 0, (index + 1) / MAX_GAMEPADS);
+        gamepadController.dispatchConnected(index);
+    }
+    await Promise.all(remainingConnectPromises);
+
+    const allGamepads = navigator.getGamepads();
+    for (let index = 0; index < MAX_GAMEPADS; ++index) {
+        const currentGamepad = allGamepads[index];
+        assert_not_equals(currentGamepad, null, `gamepad ${index}`);
+        assert_equals(currentGamepad.index, index, `gamepad ${index}.index`);
+        assert_equals(
+            currentGamepad.buttons[0].value,
+            (index + 1) / MAX_GAMEPADS,
+            `gamepad ${index}.button[0].value`);
+    }
+}, "Validates the exposed Gamepad API.");
+
+</script>
+</body>

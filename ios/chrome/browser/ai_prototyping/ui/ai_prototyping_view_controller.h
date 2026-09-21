@@ -1,0 +1,35 @@
+// Copyright 2024 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef IOS_CHROME_BROWSER_AI_PROTOTYPING_UI_AI_PROTOTYPING_VIEW_CONTROLLER_H_
+#define IOS_CHROME_BROWSER_AI_PROTOTYPING_UI_AI_PROTOTYPING_VIEW_CONTROLLER_H_
+
+#import <UIKit/UIKit.h>
+
+#import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_consumer.h"
+
+@protocol AIPrototypingMutator;
+@protocol AIPrototypingViewControllerProtocol;
+
+// View controller that displays a debug UI menu for AI prototyping.
+// This wraps multiple pages, each representing an AI feature.
+@interface AIPrototypingViewController
+    : UIViewController <AIPrototypingConsumer>
+
+// The mutator for this view controller to communicate to the mediator.
+@property(nonatomic, weak) id<AIPrototypingMutator> mutator;
+
+// Initializes the menu with the TalkToChrome view controller.
+- (instancetype)initWithTTCViewController:
+    (UIViewController<AIPrototypingViewControllerProtocol>*)ttcViewController
+    NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)initWithNibName:(NSString*)nibNameOrNil
+                         bundle:(NSBundle*)nibBundleOrNil NS_UNAVAILABLE;
+- (instancetype)initWithCoder:(NSCoder*)coder NS_UNAVAILABLE;
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+#endif  // IOS_CHROME_BROWSER_AI_PROTOTYPING_UI_AI_PROTOTYPING_VIEW_CONTROLLER_H_

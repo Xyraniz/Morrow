@@ -1,0 +1,134 @@
+/*
+ * Copyright (C) 2013 Apple Inc. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+ * THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include "third_party/blink/renderer/platform/wtf/text/string_hasher.h"
+
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/text/case_folding_hash.h"
+#include "third_party/blink/renderer/platform/wtf/text/convert_to_8bit_hash_reader.h"
+
+namespace blink {
+
+namespace {
+
+const char kNullLChars[1] = {0};
+const UChar kNullUChars[1] = {0};
+
+const uint64_t kEmptyStringHash = 0x5A6EF77074EBC84B;
+const uint64_t kSingleNullCharacterHash = 0x48DFCE108249B3F8;
+
+const LChar kTestALChars[5] = {0x41, 0x95, 0xFF, 0x50, 0x01};
+const UChar kTestAUChars[5] = {0x41, 0x95, 0xFF, 0x50, 0x01};
+const UChar kTestBUChars[5] = {0x41, 0x95, 0xFFFF, 0x1080, 0x01};
+
+const uint64_t kTestAHash = 0xE9422771E0A5DDE6;
+const uint64_t kTestBHash = 0x4A2DA770EEA75C1E;
+
+bool EqualCaseFoldingHash(StringView a, StringView b) {
+  uint32_t hash_a = a.Is8Bit() ? DeprecatedCaseFoldingHash::GetHash(a.Span8())
+                               : DeprecatedCaseFoldingHash::GetHash(a.Span16());
+  uint32_t hash_b = b.Is8Bit() ? DeprecatedCaseFoldingHash::GetHash(b.Span8())
+                               : DeprecatedCaseFoldingHash::GetHash(b.Span16());
+  return hash_a == hash_b;
+}
+
+}  // anonymous namespace
+
+TEST(StringHasherTest, HashString24) {
+  EXPECT_EQ(kEmptyStringHash & 0xFFFFFF,
+            HashString24(base::span<const uint8_t>()));
+  EXPECT_EQ(kEmptyStringHash & 0xFFFFFF,
+            HashString24(base::as_byte_span(kNullLChars).first(0u)));
+  EXPECT_EQ(kEmptyStringHash & 0xFFFFFF,
+            HashString24<ConvertTo8BitHashReader>(base::span<const uint8_t>()));
+  EXPECT_EQ(kEmptyStringHash & 0xFFFFFF,
+            HashString24<ConvertTo8BitHashReader>(
+                base::as_byte_span(kNullUChars).first(0u)));
+
+  EXPECT_EQ(kSingleNullCharacterHash & 0xFFFFFF,
+            HashString24(base::as_byte_span(kNullLChars)));
+  EXPECT_EQ(
+      kSingleNullCharacterHash & 0xFFFFFF,
+      HashString24<ConvertTo8BitHashReader>(base::as_byte_span(kNullUChars)));
+
+  EXPECT_EQ(kTestAHash & 0xFFFFFF,
+            HashString24(base::as_byte_span(kTestALChars)));
+  EXPECT_EQ(kTestAHash & 0xFFFFFF, HashString24<ConvertTo8BitHashReader>(
+                                       base::as_byte_span(kTestAUChars)));
+  EXPECT_EQ(kTestBHash & 0xFFFFFF,
+            HashString24(base::as_byte_span(kTestBUChars)));
+
+  // Test a slightly longer case (including characters that fit in Latin1
+  // but not in ASCII).
+  constexpr base::span<const char> kStr =
+      base::span_from_cstring("A quick browñ föx jumps over thé lazy dog");
+  std::array<UChar, kStr.size()> wide_str;
+  std::ranges::copy(base::as_bytes(kStr), wide_str.begin());
+  uint32_t expected_hash = HashString24(base::as_byte_span(kStr));
+  using Reader = ConvertTo8BitHashReader;
+  EXPECT_EQ(expected_hash, HashString24<Reader>(base::as_byte_span(wide_str)));
+  EXPECT_NE(expected_hash,
+            HashString24(base::as_byte_span(wide_str).first(wide_str.size())));
+  EXPECT_NE(expected_hash, HashString24(base::as_byte_span(wide_str)));
+
+  // Test a reader with expansion (kExpansionFactor > 1).
+  using ExpansionReader = CaseFoldingHashReader<LChar>;
+  base::span<const LChar> lchars = base::span(kTestALChars);
+  base::span<const UChar> uchars = base::span(kTestAUChars);
+  EXPECT_EQ(
+      HashString24<ExpansionReader>(base::as_byte_span(lchars)),
+      HashString24<CaseFoldingHashReader<UChar>>(base::as_byte_span(uchars)));
+}
+
+TEST(StringHasherTest, DeprecatedCaseFoldingHash) {
+  EXPECT_FALSE(EqualCaseFoldingHash("foo", "bar"));
+  EXPECT_TRUE(EqualCaseFoldingHash("foo", "FOO"));
+  EXPECT_TRUE(EqualCaseFoldingHash("foo", "Foo"));
+  EXPECT_TRUE(EqualCaseFoldingHash("Longer string 123", "longEr String 123"));
+  EXPECT_TRUE(EqualCaseFoldingHash(String::FromUtf8("Ünicode"),
+                                   String::FromUtf8("ünicode")));
+}
+
+TEST(StringHasherTest, ContractionAndExpansion) {
+  // DeprecatedCaseFoldingHash is the only current reader using the expansion
+  // logic, so we use it to test that the expansion logic is correct for various
+  // sizes; we don't really use the case folding itself here. We make a string
+  // that's long enough that we will hit most of the paths.
+  String str =
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_!?'$";
+  for (wtf_size_t i = 0; i < str.length(); ++i) {
+    String s8 = str.substr(0, i);
+    String s16 = s8;
+    s16.Ensure16Bit();
+    EXPECT_EQ(DeprecatedCaseFoldingHash::GetHash(s8),
+              DeprecatedCaseFoldingHash::GetHash(s16));
+    EXPECT_EQ(GetHash(s8), GetHash(s16));
+  }
+}
+
+}  // namespace blink

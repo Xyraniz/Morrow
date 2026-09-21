@@ -1,0 +1,15 @@
+import("//mojo/public/tools/bindings/mojom.gni")
+
+static_library("common") {
+  output_name = "guest_view_common"
+  sources = [
+    "guest_view_constants.cc",
+    "guest_view_constants.h",
+  ]
+}
+
+mojom("mojom") {
+  generate_legacy_js = false
+  sources = [ "guest_view.mojom" ]
+  public_deps = [ "//mojo/public/mojom/base" ]
+}

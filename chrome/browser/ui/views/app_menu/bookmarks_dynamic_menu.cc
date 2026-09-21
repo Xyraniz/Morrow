@@ -1,0 +1,181 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/ui/views/app_menu/bookmarks_dynamic_menu.h"
+
+#include <utility>
+#include <vector>
+
+#include "base/functional/bind.h"
+#include "base/strings/utf_string_conversions.h"
+#include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
+#include "chrome/browser/bookmarks/bookmark_merged_surface_service_factory.h"
+#include "chrome/browser/bookmarks/bookmark_parent_folder_children.h"
+#include "chrome/browser/favicon/favicon_utils.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/actions/chrome_action_properties.h"
+#include "chrome/browser/ui/bookmarks/bookmark_utils.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/views/app_menu/action_app_menu.h"
+#include "chrome/browser/ui/views/app_menu/app_menu_action_item.h"
+#include "chrome/grit/generated_resources.h"
+#include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/browser/bookmark_node.h"
+#include "ui/actions/actions.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/models/image_model.h"
+#include "ui/base/window_open_disposition.h"
+#include "ui/color/color_id.h"
+
+BookmarksDynamicMenu::BookmarksDynamicMenu(BrowserWindowInterface* browser)
+    : browser_window_interface_(browser) {}
+
+BookmarksDynamicMenu::~BookmarksDynamicMenu() = default;
+
+void BookmarksDynamicMenu::BuildBookmarksActions(
+    actions::BaseAction* parent_item) {
+  if (!parent_item || !browser_window_interface_) {
+    return;
+  }
+
+  BookmarkMergedSurfaceService* service =
+      BookmarkMergedSurfaceServiceFactory::GetForProfile(
+          browser_window_interface_->GetProfile());
+  if (!service || !service->loaded()) {
+    return;
+  }
+
+  BookmarkParentFolder managed_folder = BookmarkParentFolder::ManagedFolder();
+  const bool has_managed = service->GetChildrenCount(managed_folder) > 0;
+  BookmarkParentFolder bookmark_bar_folder =
+      BookmarkParentFolder::BookmarkBarFolder();
+  BookmarkParentFolderChildren bookmark_bar_children =
+      service->GetChildren(bookmark_bar_folder);
+
+  if (bookmark_bar_children.size() > 0 || has_managed) {
+    parent_item->AddChild(AppMenuActionItem::CreateDivider());
+    parent_item->AddChild(AppMenuActionItem::CreateHeader(
+        l10n_util::GetStringUTF16(IDS_BOOKMARKS_LIST_TITLE)));
+
+    if (has_managed) {
+      AddBookmarkFolderAction(parent_item, managed_folder, service);
+    }
+
+    for (const auto* node : bookmark_bar_children) {
+      if (node) {
+        AddBookmarkNodeAction(parent_item, node, service);
+      }
+    }
+  }
+
+  BookmarkParentFolder other_folder = BookmarkParentFolder::OtherFolder();
+  BookmarkParentFolder mobile_folder = BookmarkParentFolder::MobileFolder();
+  const bool has_other = service->GetChildrenCount(other_folder) > 0;
+  const bool has_mobile = service->GetChildrenCount(mobile_folder) > 0;
+
+  if (has_other || has_mobile) {
+    parent_item->AddChild(AppMenuActionItem::CreateDivider());
+    if (has_other) {
+      AddBookmarkFolderAction(parent_item, other_folder, service);
+    }
+    if (has_mobile) {
+      AddBookmarkFolderAction(parent_item, mobile_folder, service);
+    }
+  }
+}
+
+void BookmarksDynamicMenu::AddBookmarkNodeAction(
+    actions::BaseAction* parent_item,
+    const bookmarks::BookmarkNode* node,
+    BookmarkMergedSurfaceService* service) {
+  if (!node) {
+    return;
+  }
+
+  if (node->is_folder()) {
+    AddBookmarkFolderAction(
+        parent_item, BookmarkParentFolder::FromFolderNode(node), service);
+  } else if (node->is_url()) {
+    auto builder = actions::ActionItem::Builder();
+    std::u16string title = node->GetTitle().empty()
+                               ? base::UTF8ToUTF16(node->url().spec())
+                               : node->GetTitle();
+    builder.SetText(title);
+
+    bookmarks::BookmarkModel* model = service->bookmark_model();
+    if (model) {
+      const gfx::Image& image = model->GetFavicon(node);
+      if (!image.IsEmpty()) {
+        builder.SetImage(ui::ImageModel::FromImage(image));
+      } else {
+        builder.SetImage(favicon::GetDefaultFaviconModel());
+      }
+    }
+
+    builder.SetProperty(AppMenuActionItem::kContainerColorKey,
+                        ui::kColorMenuBackground);
+
+    GURL url = node->url();
+    builder.SetInvokeActionCallback(base::BindRepeating(
+        [](BrowserWindowInterface* browser, GURL url, actions::ActionItem* item,
+           actions::ActionInvocationContext context) {
+          if (browser) {
+            WindowOpenDisposition disposition =
+                context.GetProperty(chrome::kDispositionKey);
+            if (disposition == WindowOpenDisposition::UNKNOWN) {
+              disposition = WindowOpenDisposition::CURRENT_TAB;
+            }
+            browser->OpenGURL(url, disposition);
+          }
+        },
+        browser_window_interface_, url));
+
+    parent_item->AddChild(std::move(builder).Build());
+  }
+}
+
+void BookmarksDynamicMenu::AddBookmarkFolderAction(
+    actions::BaseAction* parent_item,
+    const BookmarkParentFolder& folder,
+    BookmarkMergedSurfaceService* service) {
+  BookmarkParentFolderChildren children = service->GetChildren(folder);
+  if (children.size() == 0 && !folder.HoldsNonPermanentFolder()) {
+    return;
+  }
+
+  std::vector<const bookmarks::BookmarkNode*> underlying_nodes =
+      service->GetUnderlyingNodes(folder);
+  if (underlying_nodes.empty()) {
+    return;
+  }
+
+  const chrome::BookmarkFolderIconType folder_icon_type =
+      (folder == BookmarkParentFolder::ManagedFolder())
+          ? chrome::BookmarkFolderIconType::kManaged
+          : chrome::BookmarkFolderIconType::kNormal;
+
+  auto builder = actions::ActionItem::Builder();
+  builder.SetText(underlying_nodes[0]->GetTitle())
+      .SetImage(
+          chrome::GetBookmarkFolderIcon(folder_icon_type, ui::kColorMenuIcon))
+      .SetProperty(AppMenuActionItem::kContainerColorKey,
+                   ui::kColorMenuBackground);
+  auto folder_action = std::move(builder).Build();
+
+  if (children.size() == 0) {
+    auto empty_builder = actions::ActionItem::Builder();
+    empty_builder.SetText(l10n_util::GetStringUTF16(IDS_MENU_EMPTY_SUBMENU))
+        .SetEnabled(false);
+    folder_action->AddChild(std::move(empty_builder).Build());
+  } else {
+    for (const auto* child : children) {
+      if (child) {
+        AddBookmarkNodeAction(folder_action.get(), child, service);
+      }
+    }
+  }
+
+  parent_item->AddChild(std::move(folder_action));
+}

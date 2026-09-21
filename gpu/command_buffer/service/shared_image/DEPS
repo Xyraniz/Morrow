@@ -1,0 +1,15 @@
+specific_include_rules = {
+  "dcomp_image_backing_factory_unittest\\.cc": [
+    "+ui/platform_window",
+  ],
+  "shared_image_test_base\\.cc": [
+    "+cc/test",
+  ],
+  "shared_image_factory\\.cc": [
+    # TODO(crbug.com/434724013): Remove include once DumpWithoutCrashing is no longer needed.
+    "+ash/constants/ash_switches.h"
+  ],
+  ".*_unittest\\.cc": [
+    "+cc/test",
+  ],
+}

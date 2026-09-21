@@ -1,0 +1,57 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef IOS_CHROME_BROWSER_LEVEL_UP_MODEL_TASK_TYPES_H_
+#define IOS_CHROME_BROWSER_LEVEL_UP_MODEL_TASK_TYPES_H_
+
+#import <string>
+#import <string_view>
+
+// Enum for all available tasks in the Level Up feature.
+enum class TaskType {
+  kUnknown = 0,
+  kTabGroups = 1,
+  kAutofill = 2,
+  kPinTabs = 3,
+  kGemini = 4,
+  kPaymentMethods = 5,
+  kClearBrowsingData = 6,
+  kSafeBrowsing = 7,
+  kIncognito = 8,
+  kPasswordCheckup = 9,
+  kLensWebsiteSearch = 10,
+  kAISearch = 11,
+  kLensCameraSearch = 12,
+  kMaxValue = kLensCameraSearch,
+};
+
+// Categories grouping the level-up tasks.
+enum class LevelUpTaskCategory {
+  // Tasks related to user productivity.
+  kProductivity,
+  // Tasks related to browsing safety.
+  kSafety,
+  // Tasks related to search integrations.
+  kSearch,
+};
+
+// Returns a string representation of the TaskType.
+std::string TaskTypeToString(TaskType type);
+
+// Returns the TaskType represented by `str`, or TaskType::kUnknown if invalid.
+TaskType StringToTaskType(std::string_view str);
+
+// Types representing the stats associated with completed tasks.
+enum class LevelUpTaskStatType {
+  // Number of tabs decluttered from grid.
+  kTabsDecluttered,
+  // Passwords autofilled using form suggestions or manual fill.
+  kPasswordsAutofilled,
+  // Passwords verified by checkup.
+  kPasswordsVerified,
+  // Photos/camera searches performed using Lens.
+  kPhotoSearchesPerformed,
+};
+
+#endif  // IOS_CHROME_BROWSER_LEVEL_UP_MODEL_TASK_TYPES_H_

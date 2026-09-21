@@ -1,0 +1,375 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.omnibox;
+
+import android.graphics.Paint;
+import android.graphics.Paint.FontMetricsInt;
+import android.graphics.drawable.Drawable;
+import android.text.TextUtils;
+import android.text.style.ImageSpan;
+
+import org.chromium.base.Callback;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.omnibox.SearchEngineService.SearchEngineNameObserver;
+import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.components.contextual_search.InputState;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.omnibox.AutocompleteInput;
+import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
+import org.chromium.components.omnibox.AutocompleteInput.DisplayState;
+import org.chromium.components.omnibox.AutocompleteInput.SiteSearchData;
+import org.chromium.components.omnibox.AutocompleteRequestType;
+import org.chromium.components.omnibox.ToolConfigProto.ToolConfig;
+import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
+import org.chromium.components.omnibox.ToolModeUtils;
+import org.chromium.ui.text.SpanApplier;
+import org.chromium.ui.text.SpanApplier.SpanInfo;
+import org.chromium.url.GURL;
+
+/**
+ * Handles tracking updates and calculating what should be used for the omnibox hint text. Accepts a
+ * callback to push updated text back to client.
+ */
+@NullMarked
+public class HintTextUpdater implements LocationBarDataProvider.Observer {
+    private final OmniboxResourceProvider mResourceProvider;
+    private final LocationBarDataProvider mLocationBarDataProvider;
+    private final LocationBarEmbedderUiOverrides mEmbedderUiOverrides;
+    private final Callback<CharSequence> mUpdateHintTextCallback;
+    private final MonotonicObservableSupplier<SearchEngineService> mSearchEngineServiceSupplier;
+    private final FuseboxCoordinator mFuseboxCoordinator;
+    private final NonNullObservableSupplier<Boolean> mActivationChipVisibilitySupplier;
+    private final NonNullObservableSupplier<Boolean> mActivationChipSelectedSupplier;
+    private final MonotonicObservableSupplier<Profile> mProfileSupplier;
+    private final SearchEngineNameObserver mSearchEngineNameObserver = this::updateHintText;
+    private final Callback<@AutocompleteRequestType Integer> mAutocompleteRequestTypeObserver =
+            (type) -> updateHintText();
+    private final Callback<@Nullable SiteSearchData> mSiteSearchDataObserver =
+            (siteSearchData) -> updateHintText();
+    private final Callback<SearchEngineService> mSearchEngineServiceObserver =
+            this::onSearchEngineServiceChanged;
+    private final Callback<@FuseboxState Integer> mFuseboxStateObserver =
+            (state) -> updateHintText();
+    private final Callback<@FuseboxLayoutMode Integer> mFuseboxLayoutModeObserver =
+            (mode) -> updateHintText();
+    private final Callback<Boolean> mActivationChipVisibilityObserver =
+            (visible) -> updateHintText();
+    private final Callback<Boolean> mActivationChipSelectedObserver =
+            (selected) -> updateHintText();
+    private final Callback<Profile> mProfileObserver = (profile) -> updateHintText();
+    private final Callback<String> mUserTextObserver = (text) -> updateHintText();
+    private final Callback<@DisplayState Integer> mDisplayStateObserver =
+            (state) -> updateHintText();
+
+    private @Nullable SearchEngineService mSearchEngineService;
+    private @Nullable AutocompleteInput mCurrentInput;
+    private boolean mAimHintShownThisSession;
+
+    public HintTextUpdater(
+            OmniboxResourceProvider resourceProvider,
+            LocationBarDataProvider locationBarDataProvider,
+            LocationBarEmbedderUiOverrides embedderUiOverrides,
+            MonotonicObservableSupplier<SearchEngineService> searchEngineServiceSupplier,
+            FuseboxCoordinator fuseboxCoordinator,
+            NonNullObservableSupplier<Boolean> activationChipVisibilitySupplier,
+            NonNullObservableSupplier<Boolean> activationChipSelectedSupplier,
+            MonotonicObservableSupplier<Profile> profileSupplier,
+            Callback<CharSequence> updateHintTextCallback) {
+        mResourceProvider = resourceProvider;
+        mLocationBarDataProvider = locationBarDataProvider;
+        mEmbedderUiOverrides = embedderUiOverrides;
+        mSearchEngineServiceSupplier = searchEngineServiceSupplier;
+        mFuseboxCoordinator = fuseboxCoordinator;
+        mActivationChipVisibilitySupplier = activationChipVisibilitySupplier;
+        mActivationChipSelectedSupplier = activationChipSelectedSupplier;
+        mProfileSupplier = profileSupplier;
+        mUpdateHintTextCallback = updateHintTextCallback;
+        mLocationBarDataProvider.addObserver(this);
+
+        mSearchEngineServiceSupplier.addSyncObserver(mSearchEngineServiceObserver);
+        mFuseboxCoordinator.getFuseboxStateSupplier().addSyncObserver(mFuseboxStateObserver);
+        mFuseboxCoordinator
+                .getFuseboxLayoutModeSupplier()
+                .addSyncObserver(mFuseboxLayoutModeObserver);
+        mActivationChipVisibilitySupplier.addSyncObserver(mActivationChipVisibilityObserver);
+        mActivationChipSelectedSupplier.addSyncObserver(mActivationChipSelectedObserver);
+        mProfileSupplier.addSyncObserver(mProfileObserver);
+
+        updateHintText();
+    }
+
+    /** Clean up resources used by this class. */
+    public void destroy() {
+        mLocationBarDataProvider.removeObserver(this);
+        mSearchEngineServiceSupplier.removeObserver(mSearchEngineServiceObserver);
+        if (mSearchEngineService != null) {
+            mSearchEngineService.removeSearchEngineNameObserver(mSearchEngineNameObserver);
+        }
+        mFuseboxCoordinator.getFuseboxStateSupplier().removeObserver(mFuseboxStateObserver);
+        mFuseboxCoordinator
+                .getFuseboxLayoutModeSupplier()
+                .removeObserver(mFuseboxLayoutModeObserver);
+        mActivationChipVisibilitySupplier.removeObserver(mActivationChipVisibilityObserver);
+        mActivationChipSelectedSupplier.removeObserver(mActivationChipSelectedObserver);
+        mProfileSupplier.removeObserver(mProfileObserver);
+        endInput();
+    }
+
+
+    /**
+     * Begins a new input session.
+     *
+     * @param input The input for the current session.
+     */
+    public void beginInput(AutocompleteInput input) {
+        if (mCurrentInput != null) {
+            endInput();
+        }
+        mCurrentInput = input;
+        mCurrentInput.getRequestTypeSupplier().addSyncObserver(mAutocompleteRequestTypeObserver);
+        mCurrentInput.getSiteSearchDataSupplier().addSyncObserver(mSiteSearchDataObserver);
+        mCurrentInput.getUserTextSupplier().addSyncObserver(mUserTextObserver);
+        mCurrentInput.getDisplayStateSupplier().addSyncObserver(mDisplayStateObserver);
+        updateHintText();
+    }
+
+    /** Ends the current input session. */
+    public void endInput() {
+        if (mCurrentInput != null) {
+            mCurrentInput.getRequestTypeSupplier().removeObserver(mAutocompleteRequestTypeObserver);
+            mCurrentInput.getSiteSearchDataSupplier().removeObserver(mSiteSearchDataObserver);
+            mCurrentInput.getUserTextSupplier().removeObserver(mUserTextObserver);
+            mCurrentInput.getDisplayStateSupplier().removeObserver(mDisplayStateObserver);
+        }
+        dismissAimHintIph();
+        mCurrentInput = null;
+        updateHintText();
+    }
+
+    @Override
+    public void onTitleChanged() {
+        updateHintText();
+    }
+
+    private void onSearchEngineServiceChanged(@Nullable SearchEngineService service) {
+        if (mSearchEngineService != null) {
+            mSearchEngineService.removeSearchEngineNameObserver(mSearchEngineNameObserver);
+        }
+        mSearchEngineService = service;
+        if (mSearchEngineService != null) {
+            mSearchEngineService.addSearchEngineNameObserver(mSearchEngineNameObserver);
+        }
+        updateHintText();
+    }
+
+    private void updateHintText() {
+        if (mSearchEngineService == null) return;
+        if (mEmbedderUiOverrides.isEmbedderControlledHint()) return;
+
+        if (mCurrentInput != null && mCurrentInput.getSiteSearchData() != null) {
+            mUpdateHintTextCallback.onResult("");
+            return;
+        }
+
+        if (mActivationChipSelectedSupplier.get()) {
+            boolean showDefaultHint =
+                    mCurrentInput != null
+                            && mCurrentInput.getDisplayState() != DisplayState.SUGGESTIONS
+                            && TextUtils.isEmpty(mCurrentInput.getUserText());
+            mUpdateHintTextCallback.onResult(showDefaultHint ? getDefaultHintText() : "");
+            return;
+        }
+
+        if (useAimActivationOrEmptyHint()) {
+            if (triggerOrAlreadyShowingActivationHint()) {
+                mUpdateHintTextCallback.onResult(getAimActivationHintWithSpan());
+            } else {
+                mUpdateHintTextCallback.onResult("");
+            }
+            return;
+        }
+
+        if (isSuggestionsPopover() && isConventionalSearchFocused()) {
+            mUpdateHintTextCallback.onResult("");
+            return;
+        }
+
+        mUpdateHintTextCallback.onResult(getDefaultHintText());
+    }
+
+    private String getDefaultHintText() {
+        FuseboxSessionState fuseboxSession = FuseboxSessionState.from(mLocationBarDataProvider);
+        return getOmniboxHintText(fuseboxSession);
+    }
+
+    private String getOmniboxHintText(@Nullable FuseboxSessionState fuseboxSessionState) {
+        if (fuseboxSessionState != null) {
+            AutocompleteInput input = fuseboxSessionState.getAutocompleteInput();
+            if (input != null) {
+                GURL url = input.getPageUrl();
+                String title = input.getPageTitle();
+                if (ContextualTasksUtils.isContextualTasksUrl(url) && !TextUtils.isEmpty(title)) {
+                    return title;
+                }
+            }
+        }
+
+        assert mSearchEngineService != null;
+        SearchEngineService searchEngineService = mSearchEngineService;
+        String searchEngineName = searchEngineService.getSearchEngineName();
+        if (TextUtils.isEmpty(searchEngineName)) {
+            return mResourceProvider.getString(R.string.omnibox_empty_hint);
+        }
+
+        String toolHint = getToolHintFromInputState(fuseboxSessionState);
+        if (!TextUtils.isEmpty(toolHint)) {
+            return toolHint;
+        }
+
+        return getSearchEngineHintText(searchEngineService, searchEngineName);
+    }
+
+    private @Nullable String getToolHintFromInputState(
+            @Nullable FuseboxSessionState fuseboxSessionState) {
+        if (fuseboxSessionState == null || mCurrentInput == null) {
+            return null;
+        }
+
+        @AutocompleteRequestType int requestType = mCurrentInput.getRequestType();
+        if (!ToolModeUtils.isAimRequest(requestType)) {
+            return null;
+        }
+
+        ComposeboxQueryControllerBridge bridge =
+                fuseboxSessionState.getComposeboxQueryControllerBridge();
+        if (bridge == null || bridge.getInputStateSupplier() == null) {
+            return null;
+        }
+
+        InputState inputState = bridge.getInputStateSupplier().get();
+        if (inputState == null) {
+            return null;
+        }
+
+        @ToolMode
+        int activeTool =
+                ToolModeUtils.getToolModeForRequestType(requestType, /* hasAttachments= */ false);
+        for (ToolConfig config : inputState.getToolConfigs()) {
+            if (config.getToolValue() == activeTool) {
+                return config.getHintText();
+            }
+        }
+
+        return null;
+    }
+
+    private String getSearchEngineHintText(
+            SearchEngineService searchEngineService, String searchEngineName) {
+        if (mCurrentInput != null) {
+            switch (mCurrentInput.getRequestType()) {
+                case AutocompleteRequestType.AI_MODE:
+                    return mResourceProvider.getString(
+                            R.string.omnibox_ai_mode_scope_placeholder_text, searchEngineName);
+                case AutocompleteRequestType.IMAGE_GENERATION:
+                    return mResourceProvider.getString(
+                            R.string.omnibox_empty_hint_for_image_generation, searchEngineName);
+            }
+        }
+        return searchEngineService.getOmniboxHintString();
+    }
+
+    private boolean useAimActivationOrEmptyHint() {
+        return isSuggestionsPopover() && mActivationChipVisibilitySupplier.get();
+    }
+
+    private boolean isSuggestionsPopover() {
+        return mFuseboxCoordinator.getFuseboxLayoutModeSupplier().get()
+                == FuseboxLayoutMode.SUGGESTIONS_POPOVER;
+    }
+
+    private boolean isConventionalSearchFocused() {
+        if (mCurrentInput == null) return false;
+        @DisplayState int displayState = mCurrentInput.getDisplayState();
+        boolean isFocused =
+                displayState == DisplayState.DRAFTING || displayState == DisplayState.SUGGESTIONS;
+        return isFocused && mCurrentInput.isConventionalRequestType();
+    }
+
+    private boolean triggerOrAlreadyShowingActivationHint() {
+        boolean isFullyFocused =
+                mCurrentInput != null
+                        && mCurrentInput.getAutocompleteState() == AutocompleteState.ENABLED;
+        boolean isUrlBarEmpty =
+                mCurrentInput != null && TextUtils.isEmpty(mCurrentInput.getUserText());
+        Profile profile = mProfileSupplier.get();
+        Tracker tracker = profile != null ? TrackerFactory.getTrackerForProfile(profile) : null;
+
+        if (tracker != null && isFullyFocused && isUrlBarEmpty) {
+            if (mAimHintShownThisSession) {
+                return true;
+            } else {
+                mAimHintShownThisSession =
+                        tracker.shouldTriggerHelpUi(FeatureConstants.AIM_ACTIVATION_HINT);
+                return mAimHintShownThisSession;
+            }
+        }
+
+        return false;
+    }
+
+    private void dismissAimHintIph() {
+        if (mAimHintShownThisSession) {
+            Profile profile = mProfileSupplier.get();
+            Tracker tracker = profile != null ? TrackerFactory.getTrackerForProfile(profile) : null;
+            if (tracker != null) {
+                tracker.dismissed(FeatureConstants.AIM_ACTIVATION_HINT);
+            }
+            mAimHintShownThisSession = false;
+        }
+    }
+
+    /**
+     * An ImageSpan that dynamically scales its drawable to match the text size of the rendering
+     * view's paint.
+     */
+    static class TextSizedImageSpan extends ImageSpan {
+        public TextSizedImageSpan(Drawable drawable) {
+            super(drawable, ImageSpan.ALIGN_CENTER);
+        }
+
+        @Override
+        public int getSize(
+                Paint paint, CharSequence text, int start, int end, @Nullable FontMetricsInt fm) {
+            Drawable drawable = getDrawable();
+            int size = Math.round(paint.getTextSize());
+            drawable.setBounds(0, 0, size, size);
+            return super.getSize(paint, text, start, end, fm);
+        }
+    }
+
+    private CharSequence getAimActivationHintWithSpan() {
+        String rawHint =
+                mResourceProvider.getString(
+                        R.string.ai_mode_omnibox_placeholder_android,
+                        mResourceProvider.getString(R.string.ai_mode_entrypoint_label));
+        Drawable keyboardTabDrawable = mResourceProvider.getDrawable(R.drawable.ic_keyboard_tab);
+        if (keyboardTabDrawable == null) {
+            return rawHint;
+        }
+        ImageSpan imageSpan = new TextSizedImageSpan(keyboardTabDrawable);
+        return SpanApplier.applySpans(rawHint, new SpanInfo("<tab_key>", "</tab_key>", imageSpan));
+    }
+}

@@ -1,0 +1,510 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "base/test/metrics/histogram_tester.h"
+#include "chrome/browser/glic/actor/glic_actor_functional_browsertest.h"
+#include "chrome/browser/glic/actor/glic_actor_metrics.h"
+#include "chrome/browser/glic/actor/glic_actor_test_util.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/common/webui_url_constants.h"
+#include "chrome/test/base/ui_test_utils.h"
+#include "components/actor/public/mojom/actor_types.mojom.h"
+#include "components/sessions/core/session_id.h"
+#include "content/public/test/browser_test.h"
+#include "ui/base/window_open_disposition.h"
+
+namespace glic::actor {
+namespace {
+
+using ::actor::ActorTask;
+using ::actor::TaskId;
+using ::base::test::TestFuture;
+using ::base::test::ValueIs;
+using ::optimization_guide::proto::Actions;
+using ::optimization_guide::proto::ActionsResult;
+using ::optimization_guide::proto::ClickAction;
+using ::optimization_guide::proto::ScrollAction;
+using ::optimization_guide::proto::TabObservation;
+
+class GlicActorActionExecutionFunctionalBrowserTest
+    : public GlicActorFunctionalBrowserTestBase {
+ public:
+  GlicActorActionExecutionFunctionalBrowserTest() = default;
+  ~GlicActorActionExecutionFunctionalBrowserTest() override = default;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       PerformNavigateAction) {
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  EXPECT_NE(task_id, TaskId());
+
+  TestFuture<ActorTask::State> task_completion_state;
+  base::CallbackListSubscription subscription =
+      CreateTaskCompletionSubscription(task_id, task_completion_state);
+
+  // Construct the Actions proto.
+  const GURL target_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/blank.html?target");
+  Actions action = ::actor::MakeNavigate(active_tab()->GetHandle(),
+                                         target_url.spec(), task_id);
+
+  ASSERT_OK_AND_ASSIGN(ActionsResult result, PerformActions(action));
+  EXPECT_THAT(result, HasResultCode(::actor::mojom::ActionResultCode::kOk));
+  // At the moment, no actions in GLIC set a non-empty extra_information value.
+  // Therefore, we just verify that the empty string is set.
+  ASSERT_EQ(result.extra_information_size(), 1);
+  EXPECT_EQ(result.extra_information(0), "");
+  EXPECT_EQ(target_url, web_contents()->GetURL());
+
+  StopActorTask(task_id, glic::mojom::ActorTaskStopReason::kTaskComplete);
+
+  EXPECT_EQ(ActorTask::State::kFinished, task_completion_state.Get())
+      << "Task " << task_id << " did not reach kFinished state.";
+}
+
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       PerformClickAction) {
+  // Set up the initial page with a link to the target page.
+  const GURL initial_url =
+      embedded_https_test_server().GetURL("example.com", "/actor/link.html");
+  const GURL target_url =
+      embedded_https_test_server().GetURL("example.com", "/actor/blank.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
+  EXPECT_TRUE(content::ExecJs(web_contents(),
+                              content::JsReplace("setLink($1);", target_url)));
+
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  EXPECT_NE(task_id, TaskId());
+
+  TestFuture<ActorTask::State> task_completion_state;
+  base::CallbackListSubscription subscription =
+      CreateTaskCompletionSubscription(task_id, task_completion_state);
+
+  // Click link to navigate to target page.
+  std::optional<int> link_node_id =
+      content::GetDOMNodeId(*web_contents()->GetPrimaryMainFrame(), "#link");
+  Actions action = ::actor::MakeClick(*web_contents()->GetPrimaryMainFrame(),
+                                      link_node_id.value(), ClickAction::LEFT,
+                                      ClickAction::SINGLE, task_id);
+
+  EXPECT_THAT(PerformActions(action),
+              ValueIs(HasResultCode(::actor::mojom::ActionResultCode::kOk)));
+  EXPECT_EQ(target_url, web_contents()->GetURL());
+
+  StopActorTask(task_id, glic::mojom::ActorTaskStopReason::kTaskComplete);
+  EXPECT_EQ(ActorTask::State::kFinished, task_completion_state.Get())
+      << "Task " << task_id << " did not reach kFinished state.";
+}
+
+using ClickActionFactory = ClickAction (*)(tabs::TabHandle);
+
+ClickAction MakeNullTabClickAction(tabs::TabHandle handle) {
+  ClickAction click;
+  click.mutable_target()->mutable_coordinate()->set_x(0);
+  click.mutable_target()->mutable_coordinate()->set_y(0);
+  click.set_click_type(ClickAction::LEFT);
+  click.set_click_count(ClickAction::SINGLE);
+  return click;
+}
+
+ClickAction MakeMissingTargetClickAction(tabs::TabHandle handle) {
+  ClickAction click;
+  click.set_tab_id(handle.raw_value());
+  click.set_click_type(ClickAction::LEFT);
+  click.set_click_count(ClickAction::SINGLE);
+  return click;
+}
+
+ClickAction MakeMissingTypeClickAction(tabs::TabHandle handle) {
+  ClickAction click;
+  click.set_tab_id(handle.raw_value());
+  click.mutable_target()->mutable_coordinate()->set_x(0);
+  click.mutable_target()->mutable_coordinate()->set_y(0);
+  click.set_click_count(ClickAction::SINGLE);
+  return click;
+}
+
+ClickAction MakeMissingCountClickAction(tabs::TabHandle handle) {
+  ClickAction click;
+  click.set_tab_id(handle.raw_value());
+  click.mutable_target()->mutable_coordinate()->set_x(0);
+  click.mutable_target()->mutable_coordinate()->set_y(0);
+  click.set_click_type(ClickAction::LEFT);
+  return click;
+}
+
+using ScrollActionFactory = ScrollAction (*)(tabs::TabHandle);
+
+ScrollAction MakeNullTabScrollAction(tabs::TabHandle handle) {
+  ScrollAction scroll;
+  scroll.set_direction(ScrollAction::DOWN);
+  scroll.set_distance(100.0f);
+  return scroll;
+}
+
+ScrollAction MakeMissingDirectionScrollAction(tabs::TabHandle handle) {
+  ScrollAction scroll;
+  scroll.set_tab_id(handle.raw_value());
+  scroll.set_distance(100.0f);
+  return scroll;
+}
+
+ScrollAction MakeMissingDistanceScrollAction(tabs::TabHandle handle) {
+  ScrollAction scroll;
+  scroll.set_tab_id(handle.raw_value());
+  scroll.set_direction(ScrollAction::DOWN);
+  return scroll;
+}
+
+class GlicActorClickActionExecutionErrorBrowserTest
+    : public GlicActorFunctionalBrowserTestBase,
+      public ::testing::WithParamInterface<
+          std::pair<ClickActionFactory, ::actor::mojom::ActionResultCode>> {
+ public:
+  GlicActorClickActionExecutionErrorBrowserTest() = default;
+};
+
+IN_PROC_BROWSER_TEST_P(GlicActorClickActionExecutionErrorBrowserTest,
+                       PerformClickActionErrors) {
+  // Set up the initial page with a link to the target page.
+  const GURL initial_url =
+      embedded_https_test_server().GetURL("example.com", "/actor/link.html");
+  const GURL target_url =
+      embedded_https_test_server().GetURL("example.com", "/actor/blank.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
+  EXPECT_TRUE(content::ExecJs(web_contents(),
+                              content::JsReplace("setLink($1);", target_url)));
+
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  EXPECT_NE(task_id, TaskId());
+
+  TestFuture<ActorTask::State> task_completion_state;
+  base::CallbackListSubscription subscription =
+      CreateTaskCompletionSubscription(task_id, task_completion_state);
+
+  auto [action_factory, expected_result] = GetParam();
+
+  Actions action;
+  *action.add_actions()->mutable_click() =
+      action_factory(active_tab()->GetHandle());
+  action.set_task_id(task_id.value());
+
+  ASSERT_OK_AND_ASSIGN(ActionsResult result, PerformActions(action));
+  EXPECT_THAT(result, HasResultCode(expected_result));
+  // In case of errors, no extra_information is set.
+  EXPECT_EQ(result.extra_information_size(), 0);
+
+  StopActorTask(task_id, glic::mojom::ActorTaskStopReason::kTaskComplete);
+  EXPECT_EQ(ActorTask::State::kFinished, task_completion_state.Get())
+      << "Task " << task_id << " did not reach kFinished state.";
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    GlicActorClickActionExecutionErrorBrowserTestAll,
+    GlicActorClickActionExecutionErrorBrowserTest,
+    ::testing::Values(
+        std::make_pair(MakeNullTabClickAction,
+                       ::actor::mojom::ActionResultCode::kTabWentAway),
+        std::make_pair(MakeMissingTargetClickAction,
+                       ::actor::mojom::ActionResultCode::kClickMissingTarget),
+        std::make_pair(MakeMissingTypeClickAction,
+                       ::actor::mojom::ActionResultCode::kClickMissingType),
+        std::make_pair(MakeMissingCountClickAction,
+                       ::actor::mojom::ActionResultCode::kClickInvalidCount)));
+
+class GlicActorScrollActionExecutionErrorBrowserTest
+    : public GlicActorFunctionalBrowserTestBase,
+      public ::testing::WithParamInterface<
+          std::pair<ScrollActionFactory, ::actor::mojom::ActionResultCode>> {
+ public:
+  GlicActorScrollActionExecutionErrorBrowserTest() = default;
+};
+
+IN_PROC_BROWSER_TEST_P(GlicActorScrollActionExecutionErrorBrowserTest,
+                       PerformScrollActionErrors) {
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  EXPECT_NE(task_id, TaskId());
+
+  TestFuture<ActorTask::State> task_completion_state;
+  base::CallbackListSubscription subscription =
+      CreateTaskCompletionSubscription(task_id, task_completion_state);
+
+  auto [action_factory, expected_result] = GetParam();
+
+  Actions action;
+  *action.add_actions()->mutable_scroll() =
+      action_factory(active_tab()->GetHandle());
+  action.set_task_id(task_id.value());
+
+  EXPECT_THAT(PerformActions(action), ValueIs(HasResultCode(expected_result)));
+
+  StopActorTask(task_id, glic::mojom::ActorTaskStopReason::kTaskComplete);
+  EXPECT_EQ(ActorTask::State::kFinished, task_completion_state.Get())
+      << "Task " << task_id << " did not reach kFinished state.";
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    GlicActorScrollActionExecutionErrorBrowserTestAll,
+    GlicActorScrollActionExecutionErrorBrowserTest,
+    ::testing::Values(
+        std::make_pair(MakeNullTabScrollAction,
+                       ::actor::mojom::ActionResultCode::kTabWentAway),
+        std::make_pair(
+            MakeMissingDirectionScrollAction,
+            ::actor::mojom::ActionResultCode::kScrollMissingDirection),
+        std::make_pair(
+            MakeMissingDistanceScrollAction,
+            ::actor::mojom::ActionResultCode::kScrollMissingDistance)));
+
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       PerformConcurrentAsyncWaitActions) {
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  ASSERT_NE(task_id, TaskId());
+
+  // Create tabs for the task using CreateActorTab API to ensure a
+  // TabObservation is included in its result.
+  ASSERT_OK_AND_ASSIGN(
+      tabs::TabHandle tab_1,
+      CreateActorTab(task_id, /*open_in_background=*/false,
+                     base::ToString(active_tab()->GetHandle().raw_value()),
+                     base::ToString(browser()->GetSessionID().id())));
+  ASSERT_OK_AND_ASSIGN(
+      tabs::TabHandle tab_2,
+      CreateActorTab(task_id, /*open_in_background=*/false,
+                     base::ToString(active_tab()->GetHandle().raw_value()),
+                     base::ToString(browser()->GetSessionID().id())));
+
+  // Perform two WaitActions
+  Actions action_1 = ::actor::MakeWait(kShortWaitTime, tab_1, task_id);
+  std::unique_ptr<AsyncActionWaiter> waiter_1 = PerformActionsAsync(action_1);
+  ASSERT_OK_AND_ASSIGN(ActionsResult result_1, waiter_1->Wait());
+
+  Actions action_2 = ::actor::MakeWait(kShortWaitTime, tab_2, task_id);
+  std::unique_ptr<AsyncActionWaiter> waiter_2 = PerformActionsAsync(action_2);
+  ASSERT_OK_AND_ASSIGN(ActionsResult result_2, waiter_2->Wait());
+
+  // Verify tab observations were included in the results.
+  EXPECT_THAT(result_1, HasResultCode(::actor::mojom::ActionResultCode::kOk));
+  EXPECT_THAT(result_1.tabs(), testing::SizeIs(2));
+  EXPECT_THAT(result_1.tabs().at(0).result(),
+              TabObservation::TAB_OBSERVATION_OK);
+  EXPECT_THAT(result_1.tabs().at(1).result(),
+              TabObservation::TAB_OBSERVATION_OK);
+
+  EXPECT_THAT(result_2, HasResultCode(::actor::mojom::ActionResultCode::kOk));
+  EXPECT_THAT(result_2.tabs(), testing::SizeIs(2));
+  EXPECT_THAT(result_2.tabs().at(0).result(),
+              TabObservation::TAB_OBSERVATION_OK);
+  EXPECT_THAT(result_2.tabs().at(1).result(),
+              TabObservation::TAB_OBSERVATION_OK);
+
+  StopActorTask(task_id, glic::mojom::ActorTaskStopReason::kTaskComplete);
+}
+
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       CloseTabWhileActing) {
+  base::HistogramTester histogram_tester;
+
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  EXPECT_NE(task_id, TaskId());
+
+  TestFuture<ActorTask::State> task_completion_state;
+  base::CallbackListSubscription subscription =
+      CreateTaskCompletionSubscription(task_id, task_completion_state);
+
+  Actions wait_action =
+      ::actor::MakeWait(kLongWaitTime, active_tab()->GetHandle(), task_id);
+  std::unique_ptr<AsyncActionWaiter> action_waiter =
+      PerformActionsAsync(wait_action);
+
+  // Wait for the task to start acting before closing the tab.
+  WaitForTaskState(task_id, ActorTask::State::kActing);
+
+  // Add a new background tab to prevent the browser from closing.
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), GURL(url::kAboutBlankURL),
+      WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+
+  // Close the active web contents.
+  browser()->tab_strip_model()->CloseWebContents(web_contents(),
+                                                 TabCloseTypes::CLOSE_NONE);
+
+  // After an acting tab is closed, the task should be cancelled and the
+  // corresponding action have a result code of kTaskWentAway.
+  // NOTE: We cannot use `action_waiter->Wait()` to check the result code
+  // because the test client is destroyed when all task tabs are closed.
+  EXPECT_EQ(ActorTask::State::kCancelled, task_completion_state.Get());
+  histogram_tester.ExpectUniqueSample(
+      "Actor.ExecutionEngine.Action.ResultCode",
+      ::actor::mojom::ActionResultCode::kTaskWentAway, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       PerformActionsOnCrashedTabReloadsTab) {
+  const GURL& initial_url = web_contents()->GetLastCommittedURL();
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  ASSERT_NE(task_id, TaskId());
+
+  TestFuture<ActorTask::State> task_completion_state;
+  base::CallbackListSubscription subscription =
+      CreateTaskCompletionSubscription(task_id, task_completion_state);
+
+  // Crash the tab.
+  content::CrashTab(web_contents());
+
+  // Perform a click action on the crashed tab.
+  Actions action =
+      ::actor::MakeClick(active_tab()->GetHandle(), gfx::Point(1, 1),
+                         ClickAction::LEFT, ClickAction::SINGLE, task_id);
+
+  content::TestNavigationManager reload_observer(web_contents(), initial_url);
+  EXPECT_THAT(PerformActions(action),
+              ValueIs(HasResultCode(
+                  ::actor::mojom::ActionResultCode::kRendererCrashed)));
+  EXPECT_TRUE(reload_observer.WaitForNavigationFinished());
+  EXPECT_FALSE(web_contents()->IsCrashed());
+}
+
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       CancelActions) {
+  // Makes sure we are on about:blank so the browser won't open a new tab to
+  // navigate.
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GURL(url::kAboutBlankURL)));
+
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  ASSERT_NE(task_id, TaskId());
+  const GURL target_url =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+  content::TestNavigationManager navigation_manager(web_contents(), target_url);
+
+  Actions action = ::actor::MakeNavigate(active_tab()->GetHandle(),
+                                         target_url.spec(), task_id);
+  std::unique_ptr<AsyncActionWaiter> waiter = PerformActionsAsync(action);
+
+  // WaitForRequestStart() also pauses the navigation.
+  EXPECT_TRUE(navigation_manager.WaitForRequestStart());
+  EXPECT_EQ(actor_keyed_service()->GetTask(task_id)->GetState(),
+            ActorTask::State::kActing);
+  EXPECT_THAT(CancelActions(task_id),
+              base::test::ValueIs(glic::mojom::CancelActionsResult::kSuccess));
+  EXPECT_FALSE(navigation_manager.was_committed());
+  EXPECT_EQ(actor_keyed_service()->GetTask(task_id)->GetState(),
+            ActorTask::State::kReflecting);
+  auto result = waiter->Wait();
+  EXPECT_TRUE(result.has_value());
+  EXPECT_THAT(
+      result.value(),
+      HasResultCode(::actor::mojom::ActionResultCode::kActionsCancelled));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       CancelActionsNoActionsToCancel) {
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  EXPECT_NE(task_id, TaskId());
+  EXPECT_EQ(actor_keyed_service()->GetTask(task_id)->GetState(),
+            ActorTask::State::kCreated);
+  EXPECT_THAT(CancelActions(task_id),
+              base::test::ValueIs(glic::mojom::CancelActionsResult::kSuccess));
+  EXPECT_EQ(actor_keyed_service()->GetTask(task_id)->GetState(),
+            ActorTask::State::kCreated);
+}
+
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       PerformActionsRejectsMismatchedTaskId) {
+  base::HistogramTester histogram_tester;
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  EXPECT_NE(task_id, TaskId());
+
+  const GURL target_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/blank.html?target");
+  // Construct actions targeting a different/foreign task ID.
+  TaskId foreign_task_id(task_id.value() + 999);
+  Actions action = ::actor::MakeNavigate(active_tab()->GetHandle(),
+                                         target_url.spec(), foreign_task_id);
+
+  ASSERT_OK_AND_ASSIGN(ActionsResult result, PerformActions(action));
+  EXPECT_THAT(result,
+              HasResultCode(::actor::mojom::ActionResultCode::kTaskWentAway));
+
+  histogram_tester.ExpectUniqueSample("Glic.Actor.TaskIdMatchesCurrent", false,
+                                      1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Actor.TaskIdMismatch.Method",
+      GlicActorTaskIdMismatchMethod::kPerformActions, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Actor.TaskIdMismatch.Reason",
+      GlicActorTaskIdMismatchReason::kTaskIdMismatch, 1);
+
+  StopActorTask(task_id, glic::mojom::ActorTaskStopReason::kTaskComplete);
+}
+
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       CancelActionsRejectsMismatchedTaskId) {
+  base::HistogramTester histogram_tester;
+  ASSERT_OK_AND_ASSIGN(TaskId task_id, CreateTask());
+  EXPECT_NE(task_id, TaskId());
+
+  TaskId foreign_task_id(task_id.value() + 999);
+  EXPECT_THAT(
+      CancelActions(foreign_task_id),
+      base::test::ValueIs(glic::mojom::CancelActionsResult::kTaskNotFound));
+
+  histogram_tester.ExpectUniqueSample("Glic.Actor.TaskIdMatchesCurrent", false,
+                                      1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Actor.TaskIdMismatch.Method",
+      GlicActorTaskIdMismatchMethod::kCancelActions, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Actor.TaskIdMismatch.Reason",
+      GlicActorTaskIdMismatchReason::kTaskIdMismatch, 1);
+
+  StopActorTask(task_id, glic::mojom::ActorTaskStopReason::kTaskComplete);
+}
+
+// Security regression test for bug 5:
+// Verifies that a Glic guest cannot hijack a foreign task in the profile
+// (e.g. created by experimental_actor) when the Glic session has no active
+// task (current_task_id_ is null).
+IN_PROC_BROWSER_TEST_F(GlicActorActionExecutionFunctionalBrowserTest,
+                       PerformActionsRejectsForeignTaskWhenNoCurrentTask) {
+  base::HistogramTester histogram_tester;
+  const TaskId victim_task_id = actor_keyed_service()->CreateTask(
+      ::actor::TaskSourceInfo(
+          ::actor::TaskSourceInfo::Client::kExperimentalActor,
+          /*id=*/std::nullopt),
+      ::actor::NoEnterprisePolicyChecker());
+  ASSERT_FALSE(victim_task_id.is_null());
+  ActorTask* victim_task = actor_keyed_service()->GetTask(victim_task_id);
+  ASSERT_NE(victim_task, nullptr);
+
+  const GURL initial_url = web_contents()->GetURL();
+  const GURL target_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/blank.html?hijacked-by-glic-guest");
+  ASSERT_NE(target_url, initial_url);
+
+  Actions hijack = ::actor::MakeNavigate(active_tab()->GetHandle(),
+                                         target_url.spec(), victim_task_id);
+
+  ASSERT_OK_AND_ASSIGN(ActionsResult result, PerformActions(hijack));
+  EXPECT_THAT(result,
+              HasResultCode(::actor::mojom::ActionResultCode::kTaskWentAway));
+
+  histogram_tester.ExpectUniqueSample("Glic.Actor.TaskIdMatchesCurrent", false,
+                                      1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Actor.TaskIdMismatch.Method",
+      GlicActorTaskIdMismatchMethod::kPerformActions, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Actor.TaskIdMismatch.Reason",
+      GlicActorTaskIdMismatchReason::kNoCurrentTask, 1);
+
+  EXPECT_EQ(initial_url, web_contents()->GetURL());
+  EXPECT_EQ(ActorTask::State::kCreated, victim_task->GetState());
+}
+
+}  // namespace
+}  // namespace glic::actor

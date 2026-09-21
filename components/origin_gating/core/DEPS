@@ -1,0 +1,8 @@
+include_rules = [
+  "+base",
+  "+components/keyed_service/core",
+  "+net",
+  "+testing/gtest",
+  "+third_party/abseil-cpp/absl",
+  "+url",
+]

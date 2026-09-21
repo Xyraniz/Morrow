@@ -1,0 +1,172 @@
+// Copyright 2022 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#import "ios/chrome/browser/credential_provider/model/credential_provider_util.h"
+
+#import <string>
+#import <string_view>
+
+#import "base/apple/foundation_util.h"
+#import "base/containers/flat_map.h"
+#import "base/files/scoped_temp_dir.h"
+#import "base/strings/sys_string_conversions.h"
+#import "base/strings/utf_string_conversions.h"
+#import "base/time/time.h"
+#import "components/password_manager/core/browser/password_form.h"
+#import "ios/chrome/browser/credential_provider/model/credential_provider_test_util.h"
+#import "testing/gtest_mac.h"
+#import "testing/platform_test.h"
+#import "url/gurl.h"
+
+namespace {
+
+constexpr std::string_view kTestFaviconKey = "TEST";
+
+class CredentialProviderUtilTest : public PlatformTest {
+ protected:
+  void SetUp() override {
+    PlatformTest::SetUp();
+    ASSERT_TRUE(scoped_temp_dir_.CreateUniqueTempDir());
+    SetFaviconsFolderURLForTesting(
+        base::apple::FilePathToNSURL(scoped_temp_dir_.GetPath()));
+  }
+
+  void TearDown() override {
+    SetFaviconsFolderURLForTesting(nil);
+    PlatformTest::TearDown();
+  }
+
+  base::ScopedTempDir scoped_temp_dir_;
+};
+
+// Test that the expected hash stays the same for the same URL.
+TEST_F(CredentialProviderUtilTest, GetFaviconFileKey) {
+  EXPECT_EQ(GetFaviconFileKey(GURL("https://login.yahoo.com/")),
+            "BD7639C34EA3480A8AAD704306C8870161761506AD948AC6FA037B83CFF22D37");
+  EXPECT_EQ(GetFaviconFileKey(GURL("www.kijiji.ca")),
+            "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855");
+  EXPECT_EQ(
+      GetFaviconFileKey(
+          GURL("https://www.theweathernetwork.com/ca/weather/quebec/montreal")),
+      "A0F3B5AB4012A2EC0EA3AC950B6AD8982F6FF29DE632ECC3645D566E291E3D12");
+  EXPECT_EQ(
+      GetFaviconFileKey(GURL(
+          "https://www.canadapost-postescanada.ca/track-reperage/en#/home")),
+      "9DD8ED2F4B375E5DDDEA137D8985FFD32521694331753E70AA815692CFE0653B");
+}
+
+TEST_F(CredentialProviderUtilTest, ShouldFetchFavicon) {
+  base::Time today = base::Time::Now();
+  base::Time thirteenDaysAgo = today - base::Days(13);
+  base::Time fifteenDaysAgo = today - base::Days(15);
+  std::string test_key(kTestFaviconKey);
+
+  EXPECT_TRUE(ShouldFetchFavicon(kTestFaviconKey, {}));
+
+  EXPECT_FALSE(ShouldFetchFavicon(kTestFaviconKey, {{test_key, today}}));
+  EXPECT_FALSE(
+      ShouldFetchFavicon(kTestFaviconKey, {{test_key, thirteenDaysAgo}}));
+  EXPECT_TRUE(
+      ShouldFetchFavicon(kTestFaviconKey, {{test_key, fifteenDaysAgo}}));
+
+  EXPECT_TRUE(ShouldFetchFavicon(kTestFaviconKey, {{"OtherFavicon", today}}));
+
+  // Edge cases around the 14-day boundary.
+  base::Time slightlyLessThanFourteenDaysAgo =
+      today - base::Days(14) + base::Seconds(5);
+  base::Time slightlyMoreThanFourteenDaysAgo =
+      today - base::Days(14) - base::Seconds(5);
+
+  EXPECT_FALSE(ShouldFetchFavicon(
+      kTestFaviconKey, {{test_key, slightlyLessThanFourteenDaysAgo}}));
+  EXPECT_TRUE(ShouldFetchFavicon(
+      kTestFaviconKey, {{test_key, slightlyMoreThanFourteenDaysAgo}}));
+
+  // Date in the future should not trigger a fetch.
+  base::Time futureDate = today + base::Days(1);
+  EXPECT_FALSE(ShouldFetchFavicon(kTestFaviconKey, {{test_key, futureDate}}));
+}
+
+TEST_F(CredentialProviderUtilTest, GetFaviconsListAndFreshness_NilFolder) {
+  SetFaviconsFolderURLForTesting(nil);
+  EXPECT_TRUE(GetFaviconsListAndFreshness().empty());
+}
+
+TEST_F(CredentialProviderUtilTest,
+       GetFaviconsListAndFreshness_NonExistentFolder) {
+  NSURL* folder_url = [base::apple::FilePathToNSURL(scoped_temp_dir_.GetPath())
+      URLByAppendingPathComponent:@"NonExistent"];
+  SetFaviconsFolderURLForTesting(folder_url);
+  EXPECT_TRUE(GetFaviconsListAndFreshness().empty());
+}
+
+TEST_F(CredentialProviderUtilTest, GetFaviconsListAndFreshness_EmptyFolder) {
+  EXPECT_TRUE(GetFaviconsListAndFreshness().empty());
+}
+
+TEST_F(CredentialProviderUtilTest, GetFaviconsListAndFreshness_WithFiles) {
+  NSURL* folder_url = base::apple::FilePathToNSURL(scoped_temp_dir_.GetPath());
+  NSURL* file_url = [folder_url URLByAppendingPathComponent:@"file1"];
+
+  NSError* error = nil;
+  BOOL success = [@"dummy" writeToURL:file_url
+                           atomically:YES
+                             encoding:NSUTF8StringEncoding
+                                error:&error];
+  ASSERT_TRUE(success) << base::SysNSStringToUTF8([error description]);
+
+  base::flat_map<std::string, base::Time> map = GetFaviconsListAndFreshness();
+  EXPECT_EQ(1u, map.size());
+  EXPECT_TRUE(map.contains("file1"));
+}
+
+// Tests that RecordIdentifierForPasswordForm formats unique database keys
+// correctly.
+TEST_F(CredentialProviderUtilTest, RecordIdentifierForPasswordForm) {
+  password_manager::PasswordForm form;
+  form.url = GURL("https://example.com/login");
+  form.username_element = u"user_element";
+  form.username_value = u"user@example.com";
+  form.password_element = u"pass_element";
+  form.signon_realm = "https://example.com/";
+
+  EXPECT_NSEQ(
+      @"https://example.com/"
+      @"login|user_element|user@example.com|pass_element|https://example.com/",
+      RecordIdentifierForPasswordForm(form));
+}
+
+// Tests that RecordIdentifierForPasswordForm handles empty fields and Android
+// realms.
+TEST_F(CredentialProviderUtilTest,
+       RecordIdentifierForPasswordForm_EmptyAndAndroid) {
+  password_manager::PasswordForm form;
+  form.signon_realm = "android://hash@com.example.app";
+
+  EXPECT_NSEQ(@"||||android://hash@com.example.app",
+              RecordIdentifierForPasswordForm(form));
+}
+
+// Tests that IsValidFaviconFileKey correctly validates favicon key hashes.
+TEST_F(CredentialProviderUtilTest, IsValidFaviconFileKey) {
+  // Valid 64-character hex key.
+  NSString* valid_key =
+      @"BD7639C34EA3480A8AAD704306C8870161761506AD948AC6FA037B83CFF22D37";
+  EXPECT_TRUE(IsValidFaviconFileKey(valid_key));
+  EXPECT_TRUE(IsValidFaviconFileKey([valid_key lowercaseString]));
+
+  // Nil or empty.
+  EXPECT_FALSE(IsValidFaviconFileKey(nil));
+  EXPECT_FALSE(IsValidFaviconFileKey(@""));
+
+  // Length mismatch.
+  EXPECT_FALSE(IsValidFaviconFileKey(@"ABCD"));
+  EXPECT_FALSE(IsValidFaviconFileKey([valid_key stringByAppendingString:@"A"]));
+
+  // Non-hex character.
+  EXPECT_FALSE(IsValidFaviconFileKey(
+      @"ZZ7639C34EA3480A8AAD704306C8870161761506AD948AC6FA037B83CFF22D37"));
+}
+
+}  // namespace

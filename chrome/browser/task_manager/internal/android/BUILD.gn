@@ -1,0 +1,101 @@
+import("//build/config/android/rules.gni")
+import("//third_party/jni_zero/jni_zero.gni")
+
+generate_jni("jni") {
+  sources = [
+    "java/src/org/chromium/chrome/browser/task_manager/TaskManagerObserver.java",
+    "java/src/org/chromium/chrome/browser/task_manager/TaskManagerServiceBridge.java",
+  ]
+}
+
+android_library("java") {
+  visibility = [
+    ":*",
+    "//chrome/android:chrome_all_java",
+  ]
+  sources = [
+    "java/src/org/chromium/chrome/browser/task_manager/TaskManagerFactory.java",
+    "java/src/org/chromium/chrome/browser/task_manager/TaskManagerImpl.java",
+    "java/src/org/chromium/chrome/browser/task_manager/TaskManagerObserver.java",
+    "java/src/org/chromium/chrome/browser/task_manager/TaskManagerServiceBridge.java",
+    "java/src/org/chromium/chrome/browser/task_manager/ui/PropertyStringifier.java",
+    "java/src/org/chromium/chrome/browser/task_manager/ui/TaskManagerActivity.java",
+    "java/src/org/chromium/chrome/browser/task_manager/ui/TaskManagerCoordinator.java",
+    "java/src/org/chromium/chrome/browser/task_manager/ui/TaskManagerMediator.java",
+    "java/src/org/chromium/chrome/browser/task_manager/ui/TaskManagerProperties.java",
+  ]
+
+  deps = [
+    ":java_resources",
+    "//base:callback_java",
+    "//base:log_java",
+    "//base:resetters_java",
+    "//chrome/android:chrome_java",
+    "//chrome/browser/flags:java",
+    "//chrome/browser/task_manager/android:java",
+    "//components/browser_ui/styles/android:java",
+    "//components/browser_ui/widget/android:java",
+    "//third_party/androidx:androidx_annotation_annotation_java",
+    "//third_party/androidx:androidx_appcompat_appcompat_java",
+    "//third_party/androidx:androidx_appcompat_appcompat_resources_java",
+    "//third_party/androidx:androidx_core_core_java",
+    "//third_party/androidx:androidx_recyclerview_recyclerview_java",
+    "//third_party/jni_zero:jni_zero_java",
+    "//ui/android:ui_no_recycler_view_java",
+    "//ui/android:ui_recycler_view_java",
+    "//ui/android:ui_utils_java",
+  ]
+
+  srcjar_deps = [
+    ":jni",
+    "//chrome/browser/task_manager:java_enum_srcjar",
+  ]
+
+  resources_package = "org.chromium.chrome.browser.task_manager.ui"
+}
+
+android_resources("java_resources") {
+  sources = [
+    "java/res/drawable/task_card_background.xml",
+    "java/res/drawable/task_header_divider.xml",
+    "java/res/layout/task_item.xml",
+    "java/res/layout/task_manager_activity.xml",
+    "java/res/layout/task_manager_search_box.xml",
+    "java/res/layout/task_manager_toolbar.xml",
+    "java/res/values/dimens.xml",
+    "java/res/values/styles.xml",
+  ]
+  deps = [
+    "//chrome/app:java_strings_grd",
+    "//components/browser_ui/styles/android:java_resources",
+    "//components/browser_ui/widget/android:java_resources",
+    "//ui/android:ui_java_resources",
+  ]
+}
+
+robolectric_library("junit") {
+  sources = [
+    "java/src/org/chromium/chrome/browser/task_manager/ui/TaskManagerActivityTest.java",
+    "java/src/org/chromium/chrome/browser/task_manager/ui/TaskManagerCoordinatorTest.java",
+    "java/src/org/chromium/chrome/browser/task_manager/ui/TaskManagerMediatorTest.java",
+  ]
+  deps = [
+    ":java",
+    ":java_resources",
+    "//base:base_java_test_support",
+    "//base:base_junit_test_support",
+    "//base:callback_java",
+    "//base:log_java",
+    "//chrome/android:chrome_app_java_resources",
+    "//chrome/browser/flags:java",
+    "//components/browser_ui/styles/android:java",
+    "//components/browser_ui/widget/android:java",
+    "//third_party/androidx:androidx_appcompat_appcompat_java",
+    "//third_party/androidx:androidx_recyclerview_recyclerview_java",
+    "//third_party/junit",
+    "//third_party/mockito:mockito_java",
+    "//ui/android:ui_no_recycler_view_java",
+  ]
+
+  resources_package = "org.chromium.chrome.browser.task_manager.ui"
+}

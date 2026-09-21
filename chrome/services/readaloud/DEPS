@@ -1,0 +1,9 @@
+include_rules = [
+  "+components/optimization_guide/proto",
+  "+media/mojo/mojom",
+  "+media/base",
+  "+media/filters",
+  "+media/ffmpeg",
+  "+third_party/ffmpeg",
+  "+media/audio",
+]

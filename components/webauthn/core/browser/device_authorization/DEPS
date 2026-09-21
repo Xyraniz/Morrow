@@ -1,0 +1,10 @@
+include_rules = [
+  "+components/endpoint_fetcher",
+  "+components/signin/public",
+  "+components/sync/base",
+  "+components/version_info",
+  "+google_apis/gaia",
+  "+net/base",
+  "+net/http",
+]
+

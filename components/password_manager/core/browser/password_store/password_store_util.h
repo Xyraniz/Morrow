@@ -1,0 +1,58 @@
+// Copyright 2021 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_STORE_PASSWORD_STORE_UTIL_H_
+#define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_STORE_PASSWORD_STORE_UTIL_H_
+
+#include <optional>
+#include <vector>
+
+#include "base/types/expected.h"
+#include "components/password_manager/core/browser/password_store/actionable_error.h"
+#include "components/password_manager/core/browser/password_store/password_store_backend_error.h"
+#include "components/password_manager/core/browser/password_store/password_store_change.h"
+#include "components/password_manager/core/browser/password_store/password_store_consumer.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
+
+namespace password_manager {
+
+class PasswordStoreInterface;
+
+// Aggregates change lists without deduplication. Stops at the first error or
+// successful result containing nullopt, returning that result. An empty input
+// produces a successful result containing an empty change list.
+base::expected<std::optional<PasswordStoreChangeList>,
+               PasswordStoreBackendError>
+JoinPasswordStoreChanges(
+    const std::vector<base::expected<std::optional<PasswordStoreChangeList>,
+                                     PasswordStoreBackendError>>&
+        changes_to_join);
+
+// Returns logins if |result| holds them, or an empty list if |result|
+// holds an error.
+std::vector<StoredCredential> GetLoginsOrEmptyListOnFailure(
+    base::expected<std::vector<StoredCredential>, PasswordStoreBackendError>
+        result);
+
+// Wraps all password forms in the provided vector in a unique pointer.
+std::vector<std::unique_ptr<PasswordForm>> ConvertPasswordToUniquePtr(
+    std::vector<PasswordForm> forms);
+
+// Returns whether the backend error is actionable.
+ActionableError BackendErrorToActionableError(
+    PasswordStoreBackendErrorType error);
+
+// Returns true if saving is allowed with the given `error`. This typically
+// means there is no error or the error is retriable.
+bool IsAbleToSavePasswords(ActionableError error);
+
+// Returns the ActionableError for the given profile and account password
+// stores. Only returns profile errors if there aren't any account store errors.
+ActionableError GetActionableErrorFromPasswordStores(
+    const PasswordStoreInterface* account_store,
+    const PasswordStoreInterface* profile_store);
+
+}  // namespace password_manager
+
+#endif  // COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_STORE_PASSWORD_STORE_UTIL_H_

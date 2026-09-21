@@ -1,0 +1,658 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#import "ios/chrome/browser/fullscreen/coordinator/fullscreen_mediator.h"
+
+#import <UIKit/UIKit.h>
+
+#import <optional>
+
+#import "base/ios/ios_util.h"
+#import "base/memory/raw_ptr.h"
+#import "base/metrics/histogram_functions.h"
+#import "base/time/time.h"
+#import "base/types/pass_key.h"
+#import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
+#import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent_observer_bridge.h"
+#import "ios/chrome/browser/fullscreen/model/fullscreen_constants.h"
+#import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
+#import "ios/chrome/browser/fullscreen/ui_bundled/scoped_fullscreen_disabler.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
+#import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
+#import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/chrome/browser/web/model/web_view_proxy/web_view_proxy_tab_helper.h"
+#import "ios/chrome/browser/web/model/web_view_proxy/web_view_proxy_tab_helper_observer_bridge.h"
+#import "ios/web/public/navigation/navigation_context.h"
+#import "ios/web/public/ui/crw_web_view_proxy.h"
+#import "ios/web/public/ui/crw_web_view_scroll_view_proxy.h"
+#import "ios/web/public/web_state.h"
+#import "ios/web/public/web_state_observer_bridge.h"
+
+// C++ factory class that generates the PassKey required to mutate
+// the FullscreenBrowserAgent.
+class FullscreenMediatorPassKeyFactory {
+ public:
+  static base::PassKey<FullscreenMediatorPassKeyFactory> passkey() {
+    return base::PassKey<FullscreenMediatorPassKeyFactory>();
+  }
+};
+
+namespace {
+// Helper function to return a passkey used to mutate the browser agent state.
+inline base::PassKey<FullscreenMediatorPassKeyFactory> PassKey() {
+  return FullscreenMediatorPassKeyFactory::passkey();
+}
+}  // namespace
+
+@interface FullscreenMediator () <BrowserLayoutStateObserver,
+                                  CRWWebStateObserver,
+                                  CRWWebViewScrollViewProxyObserver,
+                                  FullscreenBrowserAgentObserving,
+                                  WebStateListObserving,
+                                  WebViewProxyTabHelperObserving>
+
+// The active WebState.
+@property(nonatomic, assign) web::WebState* webState;
+
+// The scroll view proxy of the active WebState.
+@property(nonatomic, weak) CRWWebViewScrollViewProxy* scrollViewProxy;
+
+@end
+
+@implementation FullscreenMediator {
+  raw_ptr<FullscreenBrowserAgent> _browserAgent;
+  raw_ptr<WebStateList> _webStateList;
+  std::unique_ptr<WebStateListObserverBridge> _webStateListObserver;
+  std::unique_ptr<web::WebStateObserverBridge> _webStateObserver;
+  std::unique_ptr<WebViewProxyTabHelperObserverBridge> _webViewProxyObserver;
+  std::unique_ptr<FullscreenBrowserAgentObserverBridge> _browserAgentObserver;
+  __weak BrowserLayoutState* _browserLayoutState;
+  std::unique_ptr<ScopedFullscreenDisabler> _voiceOverDisabler;
+  CGFloat _lastContentOffset;
+  BOOL _isBottomOmnibox;
+  BOOL _updatingInsets;
+  BOOL _handlingScroll;
+  // Indicates whether the inset ranges have been initialized on startup.
+  BOOL _hasInitializedInsets;
+  // Scroll distance since the start of the drag, or since the scroll direction
+  // changed.
+  CGFloat _scrollTotal;
+  // The time at which the first scroll began in the current page session.
+  std::optional<base::TimeTicks> _startScrollingTime;
+  // Whether the time spent scrolling to bottom has been recorded for the
+  // current page session.
+  BOOL _isScrollingTimeRecorded;
+  // Whether the current drag gesture started while scrolled to the bottom of
+  // the page.
+  BOOL _startedDragAtBottom;
+}
+
+#pragma mark - Public
+
+- (instancetype)initWithBrowserAgent:(FullscreenBrowserAgent*)browserAgent
+                        webStateList:(WebStateList*)webStateList
+                  browserLayoutState:(BrowserLayoutState*)browserLayoutState {
+  if ((self = [super init])) {
+    CHECK(browserAgent);
+    CHECK(webStateList);
+    CHECK(browserLayoutState);
+    _browserAgent = browserAgent;
+    _webStateList = webStateList;
+    _browserLayoutState = browserLayoutState;
+    [_browserLayoutState addObserver:self];
+    _isBottomOmnibox =
+        _browserLayoutState.toolbarPosition == ToolbarPosition::kBottom;
+    _webStateListObserver = std::make_unique<WebStateListObserverBridge>(self);
+    _webStateList->AddObserver(_webStateListObserver.get());
+    _webStateObserver = std::make_unique<web::WebStateObserverBridge>(self);
+    _webViewProxyObserver =
+        std::make_unique<WebViewProxyTabHelperObserverBridge>(self);
+    _browserAgentObserver =
+        std::make_unique<FullscreenBrowserAgentObserverBridge>(self,
+                                                               browserAgent);
+    self.webState = _webStateList->GetActiveWebState();
+
+    NSNotificationCenter* defaultCenter = [NSNotificationCenter defaultCenter];
+    [defaultCenter
+        addObserver:self
+           selector:@selector(voiceOverStatusDidChange)
+               name:UIAccessibilityVoiceOverStatusDidChangeNotification
+             object:nil];
+    [defaultCenter addObserver:self
+                      selector:@selector(applicationDidEnterBackground)
+                          name:UIApplicationDidEnterBackgroundNotification
+                        object:nil];
+    [defaultCenter addObserver:self
+                      selector:@selector(applicationWillEnterForeground)
+                          name:UIApplicationWillEnterForegroundNotification
+                        object:nil];
+    [defaultCenter addObserver:self
+                      selector:@selector(keyboardWillShow:)
+                          name:UIKeyboardWillShowNotification
+                        object:nil];
+    [defaultCenter addObserver:self
+                      selector:@selector(keyboardWillChangeFrame:)
+                          name:UIKeyboardWillChangeFrameNotification
+                        object:nil];
+    [defaultCenter addObserver:self
+                      selector:@selector(keyboardWillHide:)
+                          name:UIKeyboardWillHideNotification
+                        object:nil];
+  }
+  return self;
+}
+
+- (void)disconnect {
+  _browserAgent = nullptr;
+  if (_webStateList) {
+    _webStateList->RemoveObserver(_webStateListObserver.get());
+    _webStateListObserver = nullptr;
+    _webStateList = nullptr;
+  }
+  self.webState = nullptr;
+  _webStateObserver = nullptr;
+  _browserAgentObserver = nullptr;
+  _webViewProxyObserver = nullptr;
+  [_browserLayoutState removeObserver:self];
+  _browserLayoutState = nil;
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (BOOL)isScrolledToBottomForTesting {
+  return [self isScrolledToBottom];
+}
+
+#pragma mark - Properties
+
+- (void)setWebState:(web::WebState*)webState {
+  if (_webState == webState) {
+    return;
+  }
+  if (_webState) {
+    _webState->RemoveObserver(_webStateObserver.get());
+    WebViewProxyTabHelper::FromWebState(_webState)->RemoveObserver(
+        _webViewProxyObserver.get());
+  }
+  _webState = webState;
+  _startScrollingTime = std::nullopt;
+  _isScrollingTimeRecorded = NO;
+  _startedDragAtBottom = NO;
+  if (_webState) {
+    _webState->AddObserver(_webStateObserver.get());
+    WebViewProxyTabHelper* tabHelper =
+        WebViewProxyTabHelper::FromWebState(_webState);
+    tabHelper->AddObserver(_webViewProxyObserver.get());
+    self.scrollViewProxy = tabHelper->GetWebViewProxy().scrollViewProxy;
+    _browserAgent->ExitFullscreen(
+        PassKey(), FullscreenModeTransitionTrigger::kForcedByCode,
+        /*animated=*/false);
+  } else {
+    self.scrollViewProxy = nil;
+  }
+}
+
+- (void)setScrollViewProxy:(CRWWebViewScrollViewProxy*)scrollViewProxy {
+  if (_scrollViewProxy == scrollViewProxy) {
+    return;
+  }
+  [_scrollViewProxy removeObserver:self];
+  _scrollViewProxy = scrollViewProxy;
+  [_scrollViewProxy addObserver:self];
+}
+
+#pragma mark - WebStateListObserving
+
+- (void)didChangeWebStateList:(WebStateList*)webStateList
+                       change:(const WebStateListChange&)change
+                       status:(const WebStateListStatus&)status {
+  if (status.active_web_state_change()) {
+    self.webState = status.new_active_web_state;
+  }
+}
+
+#pragma mark - BrowserLayoutStateObserver
+
+- (void)browserLayoutState:(BrowserLayoutState*)layoutState
+    didChangeToolbarPosition:(ToolbarPosition)toolbarPosition {
+  BOOL isCurrentLayoutBottomOmnibox =
+      toolbarPosition == ToolbarPosition::kBottom;
+  if (_isBottomOmnibox == isCurrentLayoutBottomOmnibox) {
+    return;
+  }
+  _isBottomOmnibox = isCurrentLayoutBottomOmnibox;
+  _browserAgent->InvalidateInsetRange();
+}
+
+#pragma mark - CRWWebStateObserver
+
+- (void)webStateWasShown:(web::WebState*)webState {
+  id<CRWWebViewProxy> webView =
+      WebViewProxyTabHelper::FromWebState(webState)->GetWebViewProxy();
+  if (@available(iOS 26, *)) {
+    webView.shouldUseViewContentInset = YES;
+  } else {
+    webView.shouldUseViewContentInset = NO;
+  }
+  // TODO(crbug.com/496229929): Call InvalidateInsetRange() from the correct
+  // event(s).
+  if (!_hasInitializedInsets) {
+    _browserAgent->InvalidateInsetRange();
+    _hasInitializedInsets = YES;
+  } else {
+    [self setViewportInsetRange];
+  }
+  [self updateViewportInsets:_browserAgent->insets()];
+}
+
+- (void)webState:(web::WebState*)webState
+    didFinishNavigation:(web::NavigationContext*)navigationContext {
+  if (!navigationContext->IsSameDocument()) {
+    _startScrollingTime = std::nullopt;
+    _isScrollingTimeRecorded = NO;
+    _startedDragAtBottom = NO;
+    _browserAgent->ExitFullscreen(
+        PassKey(), FullscreenModeTransitionTrigger::kForcedByCode,
+        /*animated=*/true);
+    [self updateViewportInsets:_browserAgent->insets()];
+  }
+}
+
+- (void)webStateDestroyed:(web::WebState*)webState {
+  DCHECK_EQ(self.webState, webState);
+  self.webState = nullptr;
+}
+
+#pragma mark - WebViewProxyTabHelperObserving
+
+- (void)webViewProxyDidChange:(WebViewProxyTabHelper*)tabHelper {
+  self.scrollViewProxy = tabHelper->GetWebViewProxy().scrollViewProxy;
+}
+
+- (void)webViewProxyTabHelperWasDestroyed:(WebViewProxyTabHelper*)tabHelper {
+  self.scrollViewProxy = nil;
+}
+
+#pragma mark - CRWWebViewScrollViewProxyObserver
+
+- (void)webViewScrollViewDidScroll:(CRWWebViewScrollViewProxy*)scrollView {
+  CGFloat contentOffset = scrollView.contentOffset.y;
+  CGFloat delta = contentOffset - _lastContentOffset;
+  _lastContentOffset = contentOffset;
+
+  if (IsFullscreenEasedTransitionsEnabled() && _browserAgent->is_animating()) {
+    return;
+  }
+
+  // Ignore programmatic scrolls (e.g. from inset updates). Only process scroll
+  // events that are actively driven by the user's touch or residual momentum.
+  if (!scrollView.isDragging && !scrollView.isDecelerating) {
+    return;
+  }
+
+  // Check if content is scrolled past the top.
+  CGFloat topInsetRemaining =
+      _browserAgent->max_insets().top - _browserAgent->insets().top;
+  if (contentOffset + topInsetRemaining <= -scrollView.contentInset.top) {
+    return;
+  }
+  // Check if content is scrolled past the bottom.
+  CGFloat scrollViewHeight = CGRectGetHeight(scrollView.frame);
+  CGFloat contentHeight = scrollView.contentSize.height;
+  if (contentOffset + scrollViewHeight - scrollView.contentInset.bottom >
+      contentHeight) {
+    return;
+  }
+
+  if (_handlingScroll || _updatingInsets) {
+    return;
+  }
+  _handlingScroll = YES;
+
+  if (delta != 0) {
+    // If the direction changed, reset the _scrollTotal.
+    if ((delta > 0 && _scrollTotal < 0) || (delta < 0 && _scrollTotal > 0)) {
+      _scrollTotal = delta;
+    } else {
+      _scrollTotal += delta;
+    }
+  }
+
+  CGFloat scrollVelocity = 0.0;
+  if (IsFullscreenEasedTransitionsEnabled()) {
+    CGPoint panVelocity = [scrollView.panGestureRecognizer
+        velocityInView:scrollView.panGestureRecognizer.view];
+    scrollVelocity = std::abs(panVelocity.y);
+  }
+
+  _browserAgent->IncrementalScroll(delta, scrollVelocity, PassKey());
+
+  if (IsFullscreenEasedTransitionsEnabled()) {
+    CGFloat progress = _browserAgent->top_progress();
+    switch (_browserAgent->settled_state()) {
+      case FullscreenState::kUIExpanded:
+        if (progress <= kEnterFullscreenProgressThreshold) {
+          _browserAgent->EnterFullscreen(
+              PassKey(),
+              FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+              /*animated=*/true);
+        }
+        break;
+      case FullscreenState::kUICollapsed:
+        if (progress >= kExitFullscreenProgressThreshold) {
+          _browserAgent->ExitFullscreen(
+              PassKey(),
+              FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+              /*animated=*/true);
+        }
+        break;
+      case FullscreenState::kInProgress:
+        break;
+    }
+  }
+
+  _handlingScroll = NO;
+}
+
+- (void)webViewScrollViewWillBeginDragging:
+    (CRWWebViewScrollViewProxy*)webViewScrollViewProxy {
+  _lastContentOffset = webViewScrollViewProxy.contentOffset.y;
+  _scrollTotal = 0;
+  _startedDragAtBottom =
+      [self isScrolledToBottom] &&
+      _browserAgent->State() == FullscreenState::kUICollapsed;
+  if (!_startScrollingTime.has_value() && [self canCollapseToolbar]) {
+    _startScrollingTime = base::TimeTicks::Now();
+    _isScrollingTimeRecorded = NO;
+  }
+}
+
+- (void)webViewScrollViewDidEndDragging:
+            (CRWWebViewScrollViewProxy*)webViewScrollViewProxy
+                         willDecelerate:(BOOL)decelerate {
+  if (!decelerate) {
+    [self snap];
+    _startedDragAtBottom = NO;
+    [self recordScrollToBottomMetricIfApplicable];
+  }
+}
+
+- (void)webViewScrollViewDidEndDecelerating:
+    (CRWWebViewScrollViewProxy*)webViewScrollViewProxy {
+  [self snap];
+  _startedDragAtBottom = NO;
+  [self recordScrollToBottomMetricIfApplicable];
+}
+
+- (void)webViewScrollViewWillBeginZooming:
+    (CRWWebViewScrollViewProxy*)webViewScrollViewProxy {
+  // TODO(crbug.com/491845727): Implement zoom lock logic.
+}
+
+- (void)webViewScrollViewDidEndZooming:
+            (CRWWebViewScrollViewProxy*)webViewScrollViewProxy
+                               atScale:(CGFloat)scale {
+  // TODO(crbug.com/491845727): Implement zoom lock logic.
+}
+
+#pragma mark - FullscreenCommands
+
+- (void)enterFullscreenWithTrigger:(FullscreenModeTransitionTrigger)trigger
+                          animated:(BOOL)animated {
+  _browserAgent->EnterFullscreen(PassKey(), trigger, animated);
+}
+
+- (void)exitFullscreenWithTrigger:(FullscreenModeTransitionTrigger)trigger
+                         animated:(BOOL)animated {
+  _browserAgent->ExitFullscreen(PassKey(), trigger, animated);
+}
+
+- (void)disableFullscreenAnimated:(BOOL)animated {
+  _browserAgent->IncrementDisabledCounter(PassKey(), animated);
+}
+
+- (void)reenableFullscreen {
+  _browserAgent->DecrementDisabledCounter(PassKey());
+}
+
+- (void)forceFullscreen:(BOOL)enable feature:(ForceFullscreenFeature)feature {
+  _browserAgent->ForceFullscreen(PassKey(), enable, feature);
+}
+
+- (void)exitForceFullscreen {
+  _browserAgent->ExitForceFullscreen(PassKey());
+}
+
+#pragma mark - System Notifications
+
+- (void)voiceOverStatusDidChange {
+  _voiceOverDisabler = UIAccessibilityIsVoiceOverRunning()
+                           ? std::make_unique<ScopedFullscreenDisabler>(self)
+                           : nullptr;
+}
+
+- (void)applicationDidEnterBackground {
+  [self exitFullscreenWithTrigger:FullscreenModeTransitionTrigger::kForcedByCode
+                         animated:NO];
+}
+
+- (void)applicationWillEnterForeground {
+  [self exitFullscreenWithTrigger:FullscreenModeTransitionTrigger::kForcedByCode
+                         animated:NO];
+}
+
+- (void)keyboardWillShow:(NSNotification*)notification {
+  [self updateKeyboardHeightFromNotification:notification];
+}
+
+- (void)keyboardWillChangeFrame:(NSNotification*)notification {
+  [self updateKeyboardHeightFromNotification:notification];
+}
+
+- (void)keyboardWillHide:(NSNotification*)notification {
+  if (_browserAgent) {
+    _browserAgent->SetKeyboardObscuredInset(0);
+  }
+}
+
+- (void)updateKeyboardHeightFromNotification:(NSNotification*)notification {
+  if (!_browserAgent || !self.webState) {
+    return;
+  }
+
+  UIView* view = self.webState->GetView();
+  if (!view.window) {
+    return;
+  }
+
+  _browserAgent->SetKeyboardObscuredInset(
+      VisibleKeyboardHeightFromNotification(notification, view.window));
+}
+
+#pragma mark - FullscreenBrowserAgentObserving
+
+- (void)fullscreenDidUpdateState:(FullscreenBrowserAgent*)agent {
+  [self updateViewportInsets:agent->insets()
+             initialVelocity:agent->animation_initial_velocity()];
+}
+
+- (void)fullscreenDidUpdateObscuredInsetRange:(FullscreenBrowserAgent*)agent {
+  [self setViewportInsetRange];
+}
+
+- (void)fullscreen:(FullscreenBrowserAgent*)agent
+     didTransition:(FullscreenTransition)transition {
+  _scrollTotal = 0;
+}
+
+#pragma mark - Private
+
+// Sets the min/max viewport insets for the current WebView.
+- (void)setViewportInsetRange {
+  if (!self.webState) {
+    return;
+  }
+
+  id<CRWWebViewProxy> webView =
+      WebViewProxyTabHelper::FromWebState(self.webState)->GetWebViewProxy();
+  [webView setMinimumViewportInset:_browserAgent->min_insets()
+              maximumViewportInset:_browserAgent->max_insets()];
+}
+
+// Updates the WebView's obscuredContentInset and the scroll view's
+// contentInset to adjust for the current position and size of
+// the toolbars.
+- (void)updateViewportInsets:(UIEdgeInsets)insets {
+  [self updateViewportInsets:insets initialVelocity:0.0];
+}
+
+- (void)updateViewportInsets:(UIEdgeInsets)insets
+             initialVelocity:(CGFloat)initialVelocity {
+  if (!self.webState) {
+    return;
+  }
+
+  id<CRWWebViewProxy> webView =
+      WebViewProxyTabHelper::FromWebState(self.webState)->GetWebViewProxy();
+  CRWWebViewScrollViewProxy* scrollView = webView.scrollViewProxy;
+
+  if (UIEdgeInsetsEqualToEdgeInsets(insets, scrollView.contentInset) &&
+      UIEdgeInsetsEqualToEdgeInsets(insets, webView.obscuredInsets)) {
+    return;
+  }
+
+  _updatingInsets = YES;
+  if (_browserAgent->invalidating_inset_range()) {
+    // Do not allow the perceived scroll position to change when the obscured
+    // inset is updated due to a device rotation or omnibox position change.
+    CGPoint offset = _scrollViewProxy.contentOffset;
+    offset.y += _scrollViewProxy.contentInset.top;
+    [webView setObscuredInsets:insets initialVelocity:initialVelocity];
+    offset.y -= _scrollViewProxy.contentInset.top;
+    _scrollViewProxy.contentOffset = offset;
+  } else {
+    [webView setObscuredInsets:insets initialVelocity:initialVelocity];
+  }
+  _updatingInsets = NO;
+}
+
+// Snaps the fullscreen progress to 0.0 or 1.0.
+- (void)snap {
+  // Show the toolbars if the user started dragging at the bottom of the page
+  // and finished dragging while still at the bottom with the toolbars fully
+  // collapsed.
+  if (_startedDragAtBottom && [self isScrolledToBottom] &&
+      _browserAgent->IsEnabled() && !_browserAgent->IsForceFullscreen() &&
+      _browserAgent->State() != FullscreenState::kUIExpanded &&
+      [self canCollapseToolbar]) {
+    _browserAgent->ExitFullscreen(
+        PassKey(), FullscreenModeTransitionTrigger::kBottomReached,
+        /*animated=*/true);
+    return;
+  }
+
+  CGFloat topProgress = _browserAgent->top_progress();
+  CGFloat bottomProgress = _browserAgent->bottom_progress();
+  if (_lastContentOffset != 0) {
+    if ((topProgress == 0.0 && bottomProgress == 0.0) ||
+        (topProgress == 1.0 && bottomProgress == 1.0)) {
+      return;
+    }
+  }
+
+  if (IsFullscreenEasedTransitionsEnabled()) {
+    switch (_browserAgent->settled_state()) {
+      case FullscreenState::kUICollapsed:
+        _browserAgent->EnterFullscreen(
+            PassKey(),
+            FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+            /*animated=*/true);
+        break;
+      case FullscreenState::kUIExpanded:
+      case FullscreenState::kInProgress:
+        _browserAgent->ExitFullscreen(
+            PassKey(),
+            FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+            /*animated=*/true);
+        break;
+    }
+    return;
+  }
+
+  // The type of snap to be executed.
+  enum class SnapType { kExit, kEnter };
+  SnapType snapType = SnapType::kExit;
+
+  if (_scrollTotal > kFullscreenSnapThreshold) {
+    snapType = SnapType::kEnter;
+  } else if (_scrollTotal < -kFullscreenSnapThreshold ||
+             _lastContentOffset == 0) {
+    snapType = SnapType::kExit;
+  } else {
+    CGFloat progress = topProgress;
+    if (_browserAgent->min_insets().top == _browserAgent->max_insets().top) {
+      progress = bottomProgress;
+    }
+    snapType = progress >= 0.5 ? SnapType::kExit : SnapType::kEnter;
+  }
+
+  if (snapType == SnapType::kExit) {
+    _browserAgent->ExitFullscreen(
+        PassKey(),
+        FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+        /*animated=*/true);
+  } else {
+    _browserAgent->EnterFullscreen(
+        PassKey(),
+        FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+        /*animated=*/true);
+  }
+}
+
+// Returns whether the content is tall enough to collapse the toolbar.
+- (BOOL)canCollapseToolbar {
+  if (!_scrollViewProxy || !_browserAgent) {
+    return NO;
+  }
+  CGFloat contentHeight = _scrollViewProxy.contentSize.height;
+  CGFloat viewportHeight = _scrollViewProxy.frame.size.height;
+  if (!base::ios::IsRunningOnIOS26OrLater()) {
+    // On iOS 18, frame height is already inset by toolbar insets. Reconstruct
+    // the un-inset viewport height.
+    viewportHeight +=
+        _browserAgent->insets().top + _browserAgent->insets().bottom;
+  }
+  CGFloat toolbarDelta =
+      (_browserAgent->max_insets().top - _browserAgent->min_insets().top) +
+      (_browserAgent->max_insets().bottom - _browserAgent->min_insets().bottom);
+  return contentHeight > viewportHeight + toolbarDelta;
+}
+
+// Returns whether the view is scrolled all the way to the bottom.
+- (BOOL)isScrolledToBottom {
+  if (!_scrollViewProxy) {
+    return NO;
+  }
+  CGFloat contentOffset = _scrollViewProxy.contentOffset.y;
+  CGFloat scrollViewHeight = CGRectGetHeight(_scrollViewProxy.frame);
+  CGFloat contentHeight = _scrollViewProxy.contentSize.height;
+  return contentOffset + scrollViewHeight -
+             _scrollViewProxy.contentInset.bottom >=
+         contentHeight - 1.0;
+}
+
+// Records the time spent scrolling to the bottom if applicable.
+- (void)recordScrollToBottomMetricIfApplicable {
+  if (!_isScrollingTimeRecorded && _startScrollingTime.has_value() &&
+      [self isScrolledToBottom]) {
+    base::UmaHistogramLongTimes(
+        kFullscreenScrollToTheBottomTime,
+        base::TimeTicks::Now() - _startScrollingTime.value());
+    _isScrollingTimeRecorded = YES;
+  }
+}
+
+@end

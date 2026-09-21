@@ -1,0 +1,107 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module glic.selection;
+
+import "ui/gfx/geometry/mojom/geometry.mojom";
+import "skia/public/mojom/bitmap.mojom";
+import "mojo/public/mojom/base/unguessable_token.mojom";
+
+union RegionShape {
+  // A rectangular region.
+  // Note that `x` and `y` denote the center of the rectangle instead of
+  // the top-left corner.
+  gfx.mojom.RectF rect;
+  // A polyline shape.
+  array<gfx.mojom.PointF> polyline;
+};
+
+struct SelectedRegion {
+  // Uniquely identifies this selected region.
+  mojo_base.mojom.UnguessableToken id;
+  // The shape of the selected region (either a rectangle or a polyline).
+  RegionShape shape;
+};
+
+enum DismissOverlayReason {
+  // The user clicks on the close button.
+  kCloseButton = 0,
+  // The user clicks on the background (only possible when the screenshot does
+  // not occupy) the entire viewport.
+  kBackgroundClick = 1,
+};
+
+struct SuggestedAction {
+  // Unique identifier for the action.
+  mojo_base.mojom.UnguessableToken id;
+  // Display title shown on the action chip.
+  string title;
+};
+
+// Receives suggested actions in segments as they become available (e.g.,
+// immediate default suggestions followed by remote MES suggestions).
+interface SuggestedActionsListener {
+  // Called whenever a batch of suggested actions is available to be appended.
+  OnSuggestedActionsAvailable(array<SuggestedAction> actions);
+};
+
+// `chrome-untrusted://glic/selection-overlay/` WebUI calls this interface to
+// setup the mojo channel.
+interface SelectionOverlayPageHandlerFactory {
+  // Called when the WebUI page is initialized. Sets up the mojom channel.
+  CreatePageHandler(pending_receiver<SelectionOverlayPageHandler> handler,
+                    pending_remote<SelectionOverlayPage> page);
+};
+
+// C++ handler that receives requests from the
+// `chrome-untrusted://glic/selection-overlay/` WebUI.
+interface SelectionOverlayPageHandler {
+  // The WebUI informs the browser to dismiss the selection overlay with a
+  // specific reason.
+  DismissOverlay(DismissOverlayReason dismiss_reason);
+
+  // The user adjusts a selected region. A new region is cached on the browser
+  // if `adjusted.id` does not match; else, the existing region is updated.
+  // If `is_using_keyboard`, focus will not be shifted to the panel.
+  AdjustRegion(SelectedRegion target, bool is_using_keyboard);
+
+  // The user deletes a selected region. No-op if `id` does not match.
+  // If `is_using_keyboard`, focus will not be shifted to the panel.
+  DeleteRegion(mojo_base.mojom.UnguessableToken id, bool is_using_keyboard);
+
+  // When called, the C++ coordinator closes the preselection toast bubble.
+  ClosePreselectionBubble();
+
+  // When this method is called, the C++ coordinator will add a blur to the
+  // tab contents.
+  AddBackgroundBlur();
+
+  // Enables/disables the live blurring of the background
+  SetLiveBlur(bool enabled);
+
+  // The user submits a prompt (e.g. from the input box). This prompt will be
+  // sent to the Glic side panel to be submitted to gemini.google.com and
+  // processed server-side.
+  SubmitPrompt(string prompt);
+
+  // Requests suggested actions from the browser for the current selection.
+  // Suggested actions are delivered in segments via `listener`.
+  GetSuggestedActions(pending_remote<SuggestedActionsListener> listener);
+
+  // The user executes a suggested action by ID.
+  ExecuteSuggestedAction(mojo_base.mojom.UnguessableToken action_id);
+};
+
+// `chrome-untrusted://glic/selection-overlay/` WebUI page handler that receives
+// requests from the browser.
+interface SelectionOverlayPage {
+  // Pass the screenshot from the browser to the WebUI. `screenshot` is captured
+  // against the current page and is not annotated. `screenshot` should not be
+  // used for anything else than the selection overlay.
+  ScreenshotReceived(
+      skia.mojom.BitmapMappedFromTrustedProcess screenshot);
+
+  // Sets post selection regions to be rendered as selected on the page.
+  SetPostRegionSelections(array<SelectedRegion> regions);
+};
