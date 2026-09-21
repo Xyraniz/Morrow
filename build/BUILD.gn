@@ -10,10 +10,6 @@ import("//build/config/features.gni")
 import("//build/util/process_version.gni")
 import("//build_overrides/build.gni")
 
-if (is_ios) {
-  import("//build/config/ios/ios_sdk.gni")
-}
-
 source_set("buildflag_header_h") {
   sources = [ "buildflag.h" ]
 }
