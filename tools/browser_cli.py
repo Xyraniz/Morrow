@@ -87,11 +87,6 @@ def _require_tool(name: str, purpose: str) -> str | None:
     return None
 
 
-def _output_dir(value: str) -> Path:
-    path = Path(value).expanduser()
-    return path if path.is_absolute() else ROOT / path
-
-
 def _passthrough_args(values: Sequence[str]) -> list[str]:
     return list(values[1:] if values and values[0] == "--" else values)
 
@@ -166,7 +161,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
     gn = _require_tool("gn", "generate build files")
     if not gn:
         return 1
-    output = _output_dir(args.out)
+    output = _relative_path(args.out)
     command = [gn, "gen", output]
     if args.args is not None:
         command.append(f"--args={args.args}")
@@ -178,7 +173,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
 
 def _require_output_dir(value: str) -> Path | None:
-    output = _output_dir(value)
+    output = _relative_path(value)
     if not output.is_dir():
         print(
             f"Build directory does not exist: {output}. Run 'mach config --out {value}' first.",
@@ -356,7 +351,7 @@ def _cmd_clean(args: argparse.Namespace) -> int:
     gn = _require_tool("gn", "clean a build directory")
     if not gn:
         return 1
-    output = _output_dir(args.out)
+    output = _relative_path(args.out)
     if not output.is_dir():
         print(f"Build directory does not exist: {output}", file=sys.stderr)
         return 2
