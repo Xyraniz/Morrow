@@ -347,29 +347,4 @@ TEST(ScopedGenericTest, OwnershipTracking) {
 #undef ASSERT_FREED
 }
 
-// Cheesy manual "no compile" test for manually validating changes.
-#if 0
-TEST(ScopedGenericTest, NoCompile) {
-  // Assignment shouldn't work.
-  /*{
-    ScopedInt a(kFirst, traits);
-    ScopedInt b(a);
-  }*/
-
-  // Comparison shouldn't work.
-  /*{
-    ScopedInt a(kFirst, traits);
-    ScopedInt b(kFirst, traits);
-    if (a == b) {
-    }
-  }*/
-
-  // Implicit conversion to bool shouldn't work.
-  /*{
-    ScopedInt a(kFirst, traits);
-    bool result = a;
-  }*/
-}
-#endif
-
 }  // namespace base

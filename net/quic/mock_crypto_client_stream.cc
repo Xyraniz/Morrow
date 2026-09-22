@@ -29,7 +29,6 @@ using quic::ENCRYPTION_ZERO_RTT;
 using quic::kAESG;
 using quic::kC255;
 using quic::kDefaultMaxStreamsPerConnection;
-using quic::kQBIC;
 using quic::Perspective;
 using quic::ProofVerifyContext;
 using quic::QUIC_CRYPTO_MESSAGE_AFTER_HANDSHAKE_COMPLETE;
@@ -42,7 +41,6 @@ using quic::QuicErrorCode;
 using quic::QuicServerId;
 using quic::QuicSession;
 using quic::QuicSpdyClientSessionBase;
-using quic::QuicTagVector;
 using quic::QuicTime;
 using quic::TransportParameters;
 using quic::test::StrictTaggingDecrypter;
@@ -378,12 +376,6 @@ void MockCryptoClientStream::SetConfigNegotiated() {
   }
   config_negotiated_ = true;
   DCHECK(session()->version().IsIetfQuic());
-  QuicTagVector cgst;
-// TODO(rtenneti): Enable the following code after BBR code is checked in.
-#if 0
-  cgst.push_back(kTBBR);
-#endif
-  cgst.push_back(kQBIC);
   QuicConfig config(config_);
   config.SetBytesForConnectionIdToSend(k8ByteConnectionId);
   config.SetMaxBidirectionalStreamsToSend(kDefaultMaxStreamsPerConnection / 2);

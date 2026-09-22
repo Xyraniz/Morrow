@@ -534,17 +534,6 @@ TEST_F(PersistentMemoryAllocatorTest, IteratorParallelismTest) {
   EXPECT_EQ(iterable_count,
             t1.count() + t2.count() + t3.count() + t4.count() + t5.count());
 
-#if 0
-  // These ensure that the threads don't run sequentially. It shouldn't be
-  // enabled in general because it could lead to a flaky test if it happens
-  // simply by chance but it is useful during development to ensure that the
-  // test is working correctly.
-  EXPECT_NE(iterable_count, t1.count());
-  EXPECT_NE(iterable_count, t2.count());
-  EXPECT_NE(iterable_count, t3.count());
-  EXPECT_NE(iterable_count, t4.count());
-  EXPECT_NE(iterable_count, t5.count());
-#endif
 }
 
 TEST_F(PersistentMemoryAllocatorTest, DelayedAllocationTest) {
