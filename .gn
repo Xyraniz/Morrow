@@ -229,7 +229,6 @@ no_check_targets = [
   "//chrome/renderer/resources:resources",
   "//chrome/test/chromedriver/constants:version_header",
   "//chrome/test/data/webui:resources",
-  "//codelabs/rust/solutions/exercise_4_cpp_interop:cxx_lib_cxx_generated",
   "//components/actor/core/internals/resources:resources",
   "//components/autofill/core/browser/autofill_and_password_manager_internals:resources",
   "//components/autofill/core/browser:autofill_address_rewriter_resources",

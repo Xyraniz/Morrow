@@ -1,4 +1,0 @@
-file://chrome/android/OWNERS
-
-per-file browser_navigator_android*.*=jthiesen@chromium.org
-per-file extension_tab_context_menu_bridge*=file://extensions/UI_OWNERS

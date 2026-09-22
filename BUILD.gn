@@ -99,7 +99,6 @@ group("gn_all") {
       "//base:base_perftests",
       "//base:base_unittests",
       "//build/modules",
-      "//codelabs",
       "//components:components_unittests",
       "//components/gwp_asan:gwp_asan_unittests",
       "//infra/orchestrator:orchestrator_all",

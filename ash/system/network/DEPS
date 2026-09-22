@@ -1,6 +1,0 @@
-include_rules = [
-  "+chromeos/ash/components/dbus/hermes",
-  "+components/device_event_log",
-  "+components/onc",
-  "+third_party/cros_system_api",
-]

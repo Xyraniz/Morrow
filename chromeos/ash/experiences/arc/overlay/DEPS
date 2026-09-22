@@ -1,5 +1,0 @@
-include_rules = [
-  "+ash/wm/window_state.h",
-]
-
-
