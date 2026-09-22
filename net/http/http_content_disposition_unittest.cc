@@ -129,14 +129,6 @@ TEST_P(HttpContentDispositionTest, Filename) {
       {"attachment; filename=caf\xc3\xa9.png", "", L"caf\x00e9.png"},
       // Non-ASCII/Non-UTF-8 string. Fall back to the referrer charset.
       {"attachment; filename=caf\xe5.png", "windows-1253", L"caf\x03b5.png"},
-#if 0
-    // Non-ASCII/Non-UTF-8 string. Fall back to the native codepage.
-    // TODO(jungshik): We need to set the OS default codepage
-    // to a specific value before testing. On Windows, we can use
-    // SetThreadLocale().
-    {"attachment; filename=\xb0\xa1\xb0\xa2.png",
-     "", L"\xac00\xac01.png"},
-#endif
       // Failure cases
       // Invalid hex-digit "G"
       {"attachment; filename==?iiso88591?Q?caf=EG?=", "", L""},

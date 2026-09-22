@@ -519,10 +519,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest, Disposition_NewPopup) {
 
   // Navigate() should have opened a new, focused popup window, with a toolbar.
   EXPECT_NE(browser(), params.browser);
-#if 0
-  // TODO(stevenjb): Enable this test. See: crbug.com/41360906
-  EXPECT_TRUE(browser->GetWindow()->IsActive());
-#endif
+  EXPECT_TRUE(params.browser->GetWindow()->IsActive());
   EXPECT_EQ(params.browser->GetType(),
             BrowserWindowInterface::Type::TYPE_POPUP);
   EXPECT_TRUE(BrowserWindow::FromBrowser(params.browser)->IsToolbarVisible());
@@ -666,10 +663,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest, Disposition_NewPopupUnfocused) {
   EXPECT_EQ(params.browser->GetType(),
             BrowserWindowInterface::Type::TYPE_POPUP);
   EXPECT_TRUE(BrowserWindow::FromBrowser(params.browser)->IsToolbarVisible());
-#if 0
-// TODO(stevenjb): Enable this test. See: crbug.com/41360906
-  EXPECT_FALSE(p.browser->GetWindow()->IsActive());
-#endif
+  EXPECT_FALSE(params.browser->GetWindow()->IsActive());
 }
 
 // This test verifies that navigating with WindowOpenDisposition = NEW_POPUP

@@ -52,7 +52,6 @@ class PageHandler;
 namespace optimization_guide {
 class ChromeHintsManager;
 class ModelExecutionEnabledBrowserTest;
-class ModelExecutionLiveTest;
 class ModelExecutionManager;
 class ModelQualityLogsUploaderService;
 class ModelValidatorKeyedService;
@@ -297,7 +296,6 @@ class OptimizationGuideKeyedService
   friend class OptimizationGuideMessageHandler;
   friend class OptimizationGuideWebContentsObserver;
   friend class optimization_guide::ModelExecutionEnabledBrowserTest;
-  friend class optimization_guide::ModelExecutionLiveTest;
   friend class optimization_guide::ModelValidatorKeyedService;
   friend class optimization_guide::OptimizationGuideKeyedServiceBrowserTest;
   friend class optimization_guide::PredictionManagerBrowserTestBase;
