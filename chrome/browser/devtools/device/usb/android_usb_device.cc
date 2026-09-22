@@ -11,13 +11,10 @@
 
 #include "base/barrier_closure.h"
 #include "base/base64.h"
-#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/no_destructor.h"
 #include "base/numerics/byte_conversions.h"
-#include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/devtools/device/usb/android_rsa.h"
 #include "chrome/browser/devtools/device/usb/android_usb_socket.h"
@@ -57,37 +54,6 @@ uint32_t Checksum(const std::string& data) {
     sum += c;
   }
   return sum;
-}
-
-void DumpMessage(bool outgoing, base::span<const uint8_t> data) {
-#if 0
-  auto is_printable = [](uint8_t c) { return c >= 0x20 && c <= 0x7E; };
-  std::string result;
-  if (data.size() == kHeaderSize) {
-    for (size_t i = 0; i < 24; ++i) {
-      result += base::StringPrintf("%02x", data[i]);
-      if ((i + 1) % 4 == 0)
-        result += " ";
-    }
-    for (const uint8_t c : data.first<24>()) {
-      if (is_printable(c)) {
-        result += c;
-      } else {
-        result += ".";
-      }
-    }
-  } else {
-    result = base::StringPrintf("%d: ", static_cast<int>(data.size()));
-    for (const uint8_t c : data) {
-      if (is_printable(c)) {
-        result += c;
-      } else {
-        result += ".";
-      }
-    }
-  }
-  LOG(ERROR) << (outgoing ? "[out] " : "[ in] ") << result;
-#endif  // 0
 }
 
 void OnProbeFinished(AndroidUsbDevicesCallback callback,
@@ -319,7 +285,6 @@ void AndroidUsbDevice::ProcessOutgoing() {
 
   BulkMessage message = outgoing_queue_.front();
   outgoing_queue_.pop();
-  DumpMessage(true, base::span(*message));
 
   device_->GenericTransferOut(
       android_device_info_.outbound_address, message->as_vector(), kUsbTimeout,
@@ -361,7 +326,6 @@ void AndroidUsbDevice::ParseHeader(UsbTransferStatus status,
     return;
   }
 
-  DumpMessage(false, buffer);
   base::span<const uint8_t> header_span = buffer.first<6 * sizeof(uint32_t)>();
   uint32_t command = base::U32FromLittleEndian(header_span.take_first<4>());
   uint32_t arg0 = base::U32FromLittleEndian(header_span.take_first<4>());
@@ -421,7 +385,6 @@ void AndroidUsbDevice::ParseBody(std::unique_ptr<AdbMessage> message,
     return;
   }
 
-  DumpMessage(false, buffer);
   message->body =
       std::string(reinterpret_cast<const char*>(buffer.data()), buffer.size());
   if (Checksum(message->body) != data_check) {

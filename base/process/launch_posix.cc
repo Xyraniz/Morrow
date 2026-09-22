@@ -438,15 +438,6 @@ Process LaunchProcess(const std::vector<std::string>& argv,
     ResetChildSignalHandlersToDefaults();
     SetSignalMask(orig_sigmask);
 
-#if 0
-    // When debugging it can be helpful to check that we really aren't making
-    // any hidden calls to malloc.
-    void *malloc_thunk =
-        reinterpret_cast<void*>(reinterpret_cast<intptr_t>(malloc) & ~4095);
-    HANDLE_EINTR(mprotect(malloc_thunk, 4096, PROT_READ | PROT_WRITE | PROT_EXEC));
-    memset(reinterpret_cast<void*>(malloc), 0xff, 8);
-#endif  // 0
-
 #if BUILDFLAG(IS_CHROMEOS)
     if (options.ctrl_terminal_fd >= 0) {
       // Set process' controlling terminal.
